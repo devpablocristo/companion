@@ -1,0 +1,58 @@
+map $host $nexus_proxy_api_key {
+    default "";
+    localhost "${NEXUS_PROXY_API_KEY}";
+    127.0.0.1 "${NEXUS_PROXY_API_KEY}";
+    ::1 "${NEXUS_PROXY_API_KEY}";
+}
+
+map $host $companion_proxy_api_key {
+    default "";
+    localhost "${COMPANION_PROXY_API_KEY}";
+    127.0.0.1 "${COMPANION_PROXY_API_KEY}";
+    ::1 "${COMPANION_PROXY_API_KEY}";
+}
+
+# DNS resolver para resolver upstreams dinámicamente.
+resolver 127.0.0.11 ipv6=off valid=10s;
+
+server {
+    listen 80;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # SPA: todas las rutas al index.html
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Companion backend (intra-red docker-compose)
+    location /companion/ {
+        proxy_pass http://companion:8080/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-API-Key $companion_proxy_api_key;
+    }
+
+    # Nexus governance (externo: vive en otro proyecto)
+    # Por defecto usa host.docker.internal:18084. Para producción, ajustar a
+    # la URL real de Nexus governance via NEXUS_PROXY_HOST/NEXUS_PROXY_PORT
+    # antes de levantar el container.
+    location /v1/ {
+        set $nexus_upstream "http://host.docker.internal:18084";
+        proxy_pass $nexus_upstream;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-API-Key $nexus_proxy_api_key;
+    }
+
+    # Healthz: redirige a Companion (su propio readyz). Nexus gestiona el suyo.
+    location /healthz {
+        proxy_pass http://companion:8080;
+    }
+
+    location /readyz {
+        proxy_pass http://companion:8080;
+    }
+}
