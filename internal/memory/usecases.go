@@ -21,6 +21,7 @@ type Repository interface {
 	Find(ctx context.Context, q FindQuery) ([]domain.MemoryEntry, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 	PurgeExpired(ctx context.Context) (int64, error)
+	CountByScope(ctx context.Context, scopeType domain.ScopeType, scopeID string) (int, error)
 }
 
 // FindQuery filtros de búsqueda de memoria.
@@ -43,14 +44,27 @@ type UpsertInput struct {
 	TTLDays     int // 0 = usar default por kind
 }
 
+// defaultPerScopeQuota es el tope de entradas vivas por (scope_type, scope_id).
+// Sin tope, una org maliciosa podría inflar la tabla via /v1/memory hasta DoS.
+// Configurable via WithPerScopeQuota desde wire.
+const defaultPerScopeQuota = 1000
+
 // Usecases lógica de negocio de memoria operativa.
 type Usecases struct {
-	repo Repository
+	repo          Repository
+	perScopeQuota int
 }
 
-// NewUsecases crea una nueva instancia de Usecases.
+// NewUsecases crea una nueva instancia de Usecases con quota default.
 func NewUsecases(repo Repository) *Usecases {
-	return &Usecases{repo: repo}
+	return &Usecases{repo: repo, perScopeQuota: defaultPerScopeQuota}
+}
+
+// WithPerScopeQuota override del tope de entradas vivas por scope. <=0 = sin
+// límite (no recomendado en multi-tenant).
+func (uc *Usecases) WithPerScopeQuota(n int) *Usecases {
+	uc.perScopeQuota = n
+	return uc
 }
 
 // Upsert crea o actualiza una entrada de memoria.
@@ -107,6 +121,17 @@ func (uc *Usecases) Upsert(ctx context.Context, in UpsertInput) (domain.MemoryEn
 	case IsNotFound(err):
 		if in.Version > 0 {
 			return domain.MemoryEntry{}, ErrVersionConflict
+		}
+		// Camino de inserción: validar quota por scope. No se aplica a updates
+		// porque no agrandan la tabla.
+		if uc.perScopeQuota > 0 {
+			n, cErr := uc.repo.CountByScope(ctx, in.ScopeType, in.ScopeID)
+			if cErr != nil {
+				return domain.MemoryEntry{}, fmt.Errorf("check memory quota: %w", cErr)
+			}
+			if n >= uc.perScopeQuota {
+				return domain.MemoryEntry{}, ErrQuotaExceeded
+			}
 		}
 	case err != nil:
 		return domain.MemoryEntry{}, fmt.Errorf("lookup memory entry: %w", err)

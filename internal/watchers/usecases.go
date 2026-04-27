@@ -320,6 +320,17 @@ func (uc *Usecases) processItem(ctx context.Context, w domain.Watcher, item doma
 	})
 	if err != nil {
 		slog.Error("watcher review submit failed", "proposal_id", proposal.ID, "error", err)
+		// Persistir el fallo en el proposal creado: si no, queda como pending
+		// con review_request_id NULL — invisible para SyncPendingProposals y
+		// difícil de reconciliar a mano. Marcamos failed con reason para que
+		// un dashboard/listado muestre el orphan.
+		now := time.Now().UTC()
+		proposal.ExecutionStatus = domain.ProposalFailed
+		proposal.ResolvedAt = &now
+		proposal.ExecutionResult = marshalSyncErrorResult("submit_review_failed", err)
+		if upErr := uc.repo.UpdateProposal(ctx, proposal); upErr != nil {
+			slog.Error("watcher mark submit-failed proposal failed", "proposal_id", proposal.ID, "error", upErr)
+		}
 		return proposal, fmt.Errorf("submit review request: %w", err)
 	}
 

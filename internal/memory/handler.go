@@ -81,6 +81,10 @@ func (h *Handler) upsert(w http.ResponseWriter, r *http.Request) {
 			httpjson.WriteFlatError(w, http.StatusConflict, "VERSION_CONFLICT", "memory entry was modified by another process")
 			return
 		}
+		if IsQuotaExceeded(err) {
+			httpjson.WriteFlatError(w, http.StatusTooManyRequests, "QUOTA_EXCEEDED", "memory quota exceeded for scope")
+			return
+		}
 		httpjson.WriteFlatInternalError(w, err, "upsert memory failed")
 		return
 	}

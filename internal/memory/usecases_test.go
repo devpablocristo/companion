@@ -73,6 +73,16 @@ func (f *fakeRepo) PurgeExpired(ctx context.Context) (int64, error) {
 	return 0, nil
 }
 
+func (f *fakeRepo) CountByScope(_ context.Context, scopeType domain.ScopeType, scopeID string) (int, error) {
+	n := 0
+	for _, e := range f.entries {
+		if e.ScopeType == scopeType && e.ScopeID == scopeID {
+			n++
+		}
+	}
+	return n, nil
+}
+
 func TestUsecases_Upsert_updatesExistingEntryByScopeKey(t *testing.T) {
 	t.Parallel()
 	repo := &fakeRepo{}
@@ -109,5 +119,43 @@ func TestUsecases_Upsert_updatesExistingEntryByScopeKey(t *testing.T) {
 	}
 	if updated.ContentText != "updated" {
 		t.Fatalf("expected updated content, got %q", updated.ContentText)
+	}
+}
+
+func TestUsecases_Upsert_rejectsInsertOverQuota(t *testing.T) {
+	t.Parallel()
+	repo := &fakeRepo{}
+	uc := NewUsecases(repo).WithPerScopeQuota(2)
+
+	for _, k := range []string{"k1", "k2"} {
+		if _, err := uc.Upsert(context.Background(), UpsertInput{
+			Kind:      domain.MemoryTaskSummary,
+			ScopeType: domain.ScopeTask,
+			ScopeID:   "task-q",
+			Key:       k,
+		}); err != nil {
+			t.Fatalf("seed %s failed: %v", k, err)
+		}
+	}
+
+	_, err := uc.Upsert(context.Background(), UpsertInput{
+		Kind:      domain.MemoryTaskSummary,
+		ScopeType: domain.ScopeTask,
+		ScopeID:   "task-q",
+		Key:       "k3",
+	})
+	if !IsQuotaExceeded(err) {
+		t.Fatalf("expected ErrQuotaExceeded, got %v", err)
+	}
+
+	// Update sobre key existente debe seguir funcionando aunque esté en límite.
+	if _, err := uc.Upsert(context.Background(), UpsertInput{
+		Kind:        domain.MemoryTaskSummary,
+		ScopeType:   domain.ScopeTask,
+		ScopeID:     "task-q",
+		Key:         "k1",
+		ContentText: "updated",
+	}); err != nil {
+		t.Fatalf("update at quota should succeed, got: %v", err)
 	}
 }

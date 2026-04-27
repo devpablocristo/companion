@@ -155,6 +155,22 @@ func (r *PostgresRepository) PurgeExpired(ctx context.Context) (int64, error) {
 	return tag.RowsAffected(), nil
 }
 
+// CountByScope devuelve cuántas entradas vivas existen en (scope_type, scope_id).
+// Excluye entradas expiradas (expires_at < now) porque PurgeExpired las va a
+// drenar en el próximo loop; contarlas inflaría el quota artificialmente.
+func (r *PostgresRepository) CountByScope(ctx context.Context, scopeType domain.ScopeType, scopeID string) (int, error) {
+	var n int
+	err := r.db.Pool().QueryRow(ctx, `
+		SELECT COUNT(*) FROM companion_memory_entries
+		WHERE scope_type = $1 AND scope_id = $2
+		  AND (expires_at IS NULL OR expires_at > $3)
+	`, scopeType, scopeID, time.Now().UTC()).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count memory by scope: %w", err)
+	}
+	return n, nil
+}
+
 type rowScanner interface {
 	Scan(dest ...any) error
 }

@@ -4,7 +4,9 @@ package pymesclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -15,35 +17,99 @@ import (
 	domain "github.com/devpablocristo/companion/internal/watchers/usecases/domain"
 )
 
+// Config configura timeout y retry del cliente. Los defaults se aplican si
+// se pasan ceros o se usa NewClient simple.
+type Config struct {
+	Timeout       time.Duration // por request HTTP. Default 15s.
+	MaxRetries    int           // GETs idempotentes. Default 2 (3 intentos totales).
+	BackoffBase   time.Duration // base del backoff exponencial. Default 200ms.
+	BackoffMax    time.Duration // techo del backoff por intento. Default 2s.
+}
+
+func (c Config) withDefaults() Config {
+	if c.Timeout <= 0 {
+		c.Timeout = 15 * time.Second
+	}
+	if c.MaxRetries < 0 {
+		c.MaxRetries = 0
+	}
+	if c.MaxRetries == 0 {
+		c.MaxRetries = 2
+	}
+	if c.BackoffBase <= 0 {
+		c.BackoffBase = 200 * time.Millisecond
+	}
+	if c.BackoffMax <= 0 {
+		c.BackoffMax = 2 * time.Second
+	}
+	return c
+}
+
 // Client es un cliente HTTP para Pymes Core API.
 type Client struct {
 	caller *httpclient.Caller
+	cfg    Config
 }
 
-// NewClient crea un nuevo cliente para Pymes Core.
+// NewClient crea un nuevo cliente con defaults razonables.
 func NewClient(baseURL, apiKey string) *Client {
+	return NewClientWithConfig(baseURL, apiKey, Config{})
+}
+
+// NewClientWithConfig permite override de timeout/retry desde wire.
+func NewClientWithConfig(baseURL, apiKey string, cfg Config) *Client {
+	cfg = cfg.withDefaults()
 	h := make(http.Header)
 	h.Set("X-API-Key", apiKey)
 	return &Client{
 		caller: &httpclient.Caller{
 			BaseURL: baseURL,
 			Header:  h,
-			HTTP:    &http.Client{Timeout: 15 * time.Second},
+			HTTP:    &http.Client{Timeout: cfg.Timeout},
 		},
+		cfg: cfg,
 	}
 }
 
+// doGet aplica retry con backoff sobre errores de red y 5xx. Es seguro
+// porque GET es idempotente. POST no se reintenta — riesgo de doble-send.
 func (c *Client) doGet(ctx context.Context, path string) ([]byte, error) {
-	st, raw, err := c.caller.DoJSON(ctx, http.MethodGet, path, nil)
-	if err != nil {
-		return nil, fmt.Errorf("pymes GET %s: %w", path, err)
+	var lastErr error
+	for attempt := 0; attempt <= c.cfg.MaxRetries; attempt++ {
+		st, raw, err := c.caller.DoJSON(ctx, http.MethodGet, path, nil)
+		if err == nil && st < 300 {
+			return raw, nil
+		}
+		// Construir el error de este intento.
+		if err != nil {
+			lastErr = fmt.Errorf("pymes GET %s: %w", path, err)
+		} else {
+			lastErr = fmt.Errorf("pymes GET %s: status %d", path, st)
+		}
+		// 4xx → no reintentar. 5xx o net err → reintentar si hay budget.
+		if err == nil && st < 500 {
+			return nil, lastErr
+		}
+		if attempt == c.cfg.MaxRetries {
+			break
+		}
+		// Backoff exponencial con techo. Respetar ctx.
+		wait := c.cfg.BackoffBase << attempt
+		if wait > c.cfg.BackoffMax {
+			wait = c.cfg.BackoffMax
+		}
+		slog.Warn("pymes GET retry", "path", path, "attempt", attempt+1, "wait", wait, "error", lastErr)
+		select {
+		case <-ctx.Done():
+			return nil, errors.Join(lastErr, ctx.Err())
+		case <-time.After(wait):
+		}
 	}
-	if st >= 300 {
-		return nil, fmt.Errorf("pymes GET %s: status %d", path, st)
-	}
-	return raw, nil
+	return nil, lastErr
 }
 
+// doPost no reintenta — POSTs (WhatsApp send) no son idempotentes y un
+// retry podría duplicar el mensaje al cliente.
 func (c *Client) doPost(ctx context.Context, path string, payload any) ([]byte, error) {
 	st, raw, err := c.caller.DoJSON(ctx, http.MethodPost, path, payload)
 	if err != nil {
