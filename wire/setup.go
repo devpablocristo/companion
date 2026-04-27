@@ -29,6 +29,20 @@ type taskMemoryAdapter struct {
 	uc *memory.Usecases
 }
 
+// taskOrgGetter resuelve el org_id de una task para que el handler de
+// memoria pueda autorizar memorias scope=task contra el principal.
+type taskOrgGetter struct {
+	repo tasks.Repository
+}
+
+func (g taskOrgGetter) GetTaskOrg(ctx context.Context, taskID uuid.UUID) (string, error) {
+	t, err := g.repo.GetTaskByID(ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+	return t.OrgID, nil
+}
+
 func (a taskMemoryAdapter) UpsertTaskMemory(ctx context.Context, taskID uuid.UUID, kind, key string, contentText string, payload json.RawMessage) error {
 	if len(payload) == 0 {
 		payload = json.RawMessage(`{}`)
@@ -113,7 +127,7 @@ func NewServer(cfg Config) (http.Handler, func(), error) {
 	// Memory module
 	memRepo := memory.NewPostgresRepository(db)
 	memUC := memory.NewUsecases(memRepo)
-	memHandler := memory.NewHandler(memUC)
+	memHandler := memory.NewHandler(memUC, taskOrgGetter{repo: repo})
 	uc.SetTaskMemory(taskMemoryAdapter{uc: memUC})
 
 	// Runtime del compañero (LLM + tools + context)

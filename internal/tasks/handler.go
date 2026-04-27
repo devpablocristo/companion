@@ -83,7 +83,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		ContextJSON: body.ContextJSON,
 	})
 	if err != nil {
-		httpjson.WriteFlatError(w, http.StatusBadRequest, "VALIDATION", err.Error())
+		httpjson.WriteFlatInternalError(w, err, "create task failed")
 		return
 	}
 	httpjson.WriteJSON(w, http.StatusCreated, tasksdto.TaskToResponse(t))
@@ -200,7 +200,7 @@ func (h *Handler) addMessage(w http.ResponseWriter, r *http.Request) {
 			httpjson.WriteFlatError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
 			return
 		}
-		httpjson.WriteFlatError(w, http.StatusBadRequest, "VALIDATION", err.Error())
+		httpjson.WriteFlatInternalError(w, err, "add message failed")
 		return
 	}
 	httpjson.WriteJSON(w, http.StatusCreated, tasksdto.MessageToResponse(m))
@@ -358,7 +358,7 @@ func (h *Handler) setExecutionPlan(w http.ResponseWriter, r *http.Request) {
 			httpjson.WriteFlatError(w, http.StatusConflict, "CONFLICT", "invalid task state")
 			return
 		}
-		httpjson.WriteFlatError(w, http.StatusBadRequest, "VALIDATION", err.Error())
+		httpjson.WriteFlatInternalError(w, err, "set execution plan failed")
 		return
 	}
 	httpjson.WriteJSON(w, http.StatusOK, tasksdto.ExecutionPlanToResponse(plan))
@@ -389,7 +389,7 @@ func (h *Handler) execute(w http.ResponseWriter, r *http.Request) {
 			httpjson.WriteFlatError(w, http.StatusConflict, "CONFLICT", "invalid task state")
 			return
 		}
-		httpjson.WriteFlatError(w, http.StatusBadRequest, "VALIDATION", err.Error())
+		httpjson.WriteFlatInternalError(w, err, "execute task failed")
 		return
 	}
 	httpjson.WriteJSON(w, http.StatusOK, tasksdto.ExecuteTaskResponse{
@@ -425,7 +425,7 @@ func (h *Handler) retry(w http.ResponseWriter, r *http.Request) {
 			httpjson.WriteFlatError(w, http.StatusConflict, "CONFLICT", "invalid task state")
 			return
 		}
-		httpjson.WriteFlatError(w, http.StatusBadRequest, "VALIDATION", err.Error())
+		httpjson.WriteFlatInternalError(w, err, "retry task failed")
 		return
 	}
 	httpjson.WriteJSON(w, http.StatusOK, tasksdto.ExecuteTaskResponse{

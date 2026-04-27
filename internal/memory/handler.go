@@ -23,14 +23,24 @@ type memoryUsecase interface {
 	Delete(ctx context.Context, id uuid.UUID) error
 }
 
-// Handler HTTP adapter para memoria operativa.
-type Handler struct {
-	uc memoryUsecase
+// TaskOrgGetter resuelve el org_id de una task para que el handler pueda
+// validar memorias scope=task contra el principal. ErrTaskNotFound debe
+// devolverse si la task no existe.
+type TaskOrgGetter interface {
+	GetTaskOrg(ctx context.Context, taskID uuid.UUID) (string, error)
 }
 
-// NewHandler crea un nuevo handler de memoria.
-func NewHandler(uc memoryUsecase) *Handler {
-	return &Handler{uc: uc}
+// Handler HTTP adapter para memoria operativa.
+type Handler struct {
+	uc       memoryUsecase
+	taskOrgs TaskOrgGetter
+}
+
+// NewHandler crea un nuevo handler de memoria. taskOrgs puede ser nil; en
+// ese caso las memorias scope=task quedan rechazadas por defecto cuando
+// hay X-Org-ID (fail-closed).
+func NewHandler(uc memoryUsecase, taskOrgs TaskOrgGetter) *Handler {
+	return &Handler{uc: uc, taskOrgs: taskOrgs}
 }
 
 // Register registra las rutas de memoria en el mux.
@@ -51,7 +61,7 @@ func (h *Handler) upsert(w http.ResponseWriter, r *http.Request) {
 		httpjson.WriteFlatError(w, http.StatusBadRequest, "VALIDATION", "kind, scope_type, scope_id, and key are required")
 		return
 	}
-	if !authorizeMemoryScope(r, domain.ScopeType(body.ScopeType), body.ScopeID) {
+	if !h.authorizeMemoryScope(r, domain.ScopeType(body.ScopeType), body.ScopeID) {
 		httpjson.WriteFlatError(w, http.StatusForbidden, "FORBIDDEN", "memory scope is not allowed for this principal")
 		return
 	}
@@ -92,7 +102,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 		httpjson.WriteFlatInternalError(w, err, "get memory failed")
 		return
 	}
-	if !authorizeMemoryScope(r, entry.ScopeType, entry.ScopeID) {
+	if !h.authorizeMemoryScope(r, entry.ScopeType, entry.ScopeID) {
 		httpjson.WriteFlatError(w, http.StatusForbidden, "FORBIDDEN", "memory scope is not allowed for this principal")
 		return
 	}
@@ -107,7 +117,7 @@ func (h *Handler) find(w http.ResponseWriter, r *http.Request) {
 		httpjson.WriteFlatError(w, http.StatusBadRequest, "VALIDATION", "scope_type and scope_id are required")
 		return
 	}
-	if !authorizeMemoryScope(r, domain.ScopeType(scopeType), scopeID) {
+	if !h.authorizeMemoryScope(r, domain.ScopeType(scopeType), scopeID) {
 		httpjson.WriteFlatError(w, http.StatusForbidden, "FORBIDDEN", "memory scope is not allowed for this principal")
 		return
 	}
@@ -145,7 +155,7 @@ func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {
 		httpjson.WriteFlatInternalError(w, err, "get memory failed")
 		return
 	}
-	if !authorizeMemoryScope(r, entry.ScopeType, entry.ScopeID) {
+	if !h.authorizeMemoryScope(r, entry.ScopeType, entry.ScopeID) {
 		httpjson.WriteFlatError(w, http.StatusForbidden, "FORBIDDEN", "memory scope is not allowed for this principal")
 		return
 	}
@@ -160,7 +170,7 @@ func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func authorizeMemoryScope(r *http.Request, scopeType domain.ScopeType, scopeID string) bool {
+func (h *Handler) authorizeMemoryScope(r *http.Request, scopeType domain.ScopeType, scopeID string) bool {
 	orgID := strings.TrimSpace(r.Header.Get("X-Org-ID"))
 	if orgID == "" {
 		return true
@@ -173,7 +183,22 @@ func authorizeMemoryScope(r *http.Request, scopeType domain.ScopeType, scopeID s
 	case domain.ScopeUser:
 		return scopeID != "" && scopeID == strings.TrimSpace(r.Header.Get("X-User-ID"))
 	case domain.ScopeTask:
-		return true
+		// Antes esto retornaba true: cualquier principal podía leer/escribir
+		// memoria de cualquier task. Ahora resolvemos el org de la task vía
+		// taskOrgs y exigimos coincidencia. Sin getter inyectado o task sin
+		// org → fail-closed.
+		if h.taskOrgs == nil {
+			return false
+		}
+		taskID, err := uuid.Parse(scopeID)
+		if err != nil {
+			return false
+		}
+		taskOrg, err := h.taskOrgs.GetTaskOrg(r.Context(), taskID)
+		if err != nil {
+			return false
+		}
+		return strings.TrimSpace(taskOrg) == orgID
 	default:
 		return false
 	}
