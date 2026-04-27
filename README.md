@@ -1,11 +1,10 @@
 # Companion
 
-Empleado IA transversal del ecosistema. Consume `Nexus Governance` para todas
-las acciones que requieran approval/audit.
+Empleado IA transversal del ecosistema. Consume **Nexus Governance** (proyecto
+separado) para todas las acciones que requieran approval/audit.
 
-> Origen: este proyecto fue extraído del monorepo `nexus/v3/companion/` para
-> vivir como repo independiente. Module Go: `github.com/devpablocristo/companion`.
-> La DB sigue llamándose `nexus_companion` por consistencia histórica.
+> La DB se llama `nexus_companion` por consistencia histórica con el resto
+> del ecosistema; el módulo Go es `github.com/devpablocristo/companion`.
 
 ## Estructura
 
@@ -31,14 +30,15 @@ companion/
 ## Requisitos
 
 - PostgreSQL (la DB `nexus_companion` se crea automáticamente desde el container).
-- `Nexus Governance` accesible vía `NEXUS_BASE_URL` y `NEXUS_API_KEY` (proyecto separado en `../nexus/`).
+- **Nexus Governance** accesible vía `GOVERNANCE_BASE_URL` y `GOVERNANCE_API_KEY`
+  (proyecto separado en `../nexus/`).
 
 ## Arranque rápido
 
 Levantá Nexus governance primero (en `../nexus/`):
 
 ```bash
-cd ../nexus/v3
+cd ../nexus
 make up
 ```
 
@@ -61,11 +61,14 @@ URLs por defecto (host):
 
 Ver `.env.example`.
 
-Las que vienen del monorepo Nexus y se conservan:
-- `NEXUS_BASE_URL`, `NEXUS_API_KEY` — apuntan al servicio Nexus governance.
-- `NEXUS_API_KEYS` (dentro del container) — auth del propio companion.
-- `NEXUS_LLM_PROVIDER`, `NEXUS_LLM_API_KEY`, `NEXUS_LLM_MODEL`.
-- `COMPANION_*` — propias del servicio.
+Convenciones:
+- `GOVERNANCE_BASE_URL`, `GOVERNANCE_API_KEY` — apuntan al servicio Nexus governance externo.
+- `COMPANION_API_KEYS` (dentro del container) — auth del propio companion.
+- `COMPANION_AUTH_*` — OIDC/JWKS opcional para sesión humana.
+- `COMPANION_LLM_PROVIDER` / `COMPANION_LLM_API_KEY` / `COMPANION_LLM_MODEL`
+  — runtime IA del companion.
+- `COMPANION_GOVERNANCE_SYNC_INTERVAL_SEC` — período del loop que reconcilia
+  decisiones de governance con propuestas pendientes.
 
 ## Tests
 

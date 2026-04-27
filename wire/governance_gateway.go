@@ -13,31 +13,31 @@ import (
 	"github.com/devpablocristo/core/governance/go/reviewclient"
 )
 
-// nexusGateway es el cliente HTTP de companion hacia el servicio Nexus governance
+// governanceGateway es el cliente HTTP de companion hacia el servicio Nexus Governance
 // (ex review). Conserva el cliente del paquete `core/governance/go/reviewclient`
 // porque el contrato HTTP no cambió: solo se renombró el servicio.
-type nexusGateway struct {
+type governanceGateway struct {
 	client  *reviewclient.Client
 	baseURL string
 	apiKey  string
 	http    *http.Client
 }
 
-type nexusError struct {
+type governanceError struct {
 	Kind       string
 	StatusCode int
 	Body       string
 }
 
-func (e nexusError) Error() string {
+func (e governanceError) Error() string {
 	if e.Body == "" {
-		return fmt.Sprintf("nexus %s: status %d", e.Kind, e.StatusCode)
+		return fmt.Sprintf("governance %s: status %d", e.Kind, e.StatusCode)
 	}
-	return fmt.Sprintf("nexus %s: status %d body %s", e.Kind, e.StatusCode, e.Body)
+	return fmt.Sprintf("governance %s: status %d body %s", e.Kind, e.StatusCode, e.Body)
 }
 
-func newNexusGateway(baseURL, apiKey string) *nexusGateway {
-	return &nexusGateway{
+func newGovernanceGateway(baseURL, apiKey string) *governanceGateway {
+	return &governanceGateway{
 		client:  reviewclient.NewClient(baseURL, apiKey),
 		baseURL: strings.TrimRight(baseURL, "/"),
 		apiKey:  apiKey,
@@ -45,23 +45,23 @@ func newNexusGateway(baseURL, apiKey string) *nexusGateway {
 	}
 }
 
-func (g *nexusGateway) SubmitRequest(ctx context.Context, idempotencyKey string, body reviewclient.SubmitRequestBody) (reviewclient.SubmitResponse, error) {
+func (g *governanceGateway) SubmitRequest(ctx context.Context, idempotencyKey string, body reviewclient.SubmitRequestBody) (reviewclient.SubmitResponse, error) {
 	return g.client.SubmitRequest(ctx, idempotencyKey, body)
 }
 
-func (g *nexusGateway) GetRequest(ctx context.Context, id string) (reviewclient.RequestSummary, int, error) {
+func (g *governanceGateway) GetRequest(ctx context.Context, id string) (reviewclient.RequestSummary, int, error) {
 	return g.client.GetRequest(ctx, id)
 }
 
-func (g *nexusGateway) GetRequestMeta(ctx context.Context, id string) (status string, orgID string, httpStatus int, err error) {
+func (g *governanceGateway) GetRequestMeta(ctx context.Context, id string) (status string, orgID string, httpStatus int, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.baseURL+"/v1/requests/"+id, nil)
 	if err != nil {
-		return "", "", 0, fmt.Errorf("build nexus get request: %w", err)
+		return "", "", 0, fmt.Errorf("build governance get request: %w", err)
 	}
 	req.Header.Set("X-API-Key", g.apiKey)
 	resp, err := g.http.Do(req)
 	if err != nil {
-		return "", "", 0, fmt.Errorf("get nexus request: %w", err)
+		return "", "", 0, fmt.Errorf("get governance request: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -72,12 +72,12 @@ func (g *nexusGateway) GetRequestMeta(ctx context.Context, id string) (status st
 		OrgID  string `json:"org_id"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return "", "", resp.StatusCode, fmt.Errorf("decode nexus get response: %w", err)
+		return "", "", resp.StatusCode, fmt.Errorf("decode governance get response: %w", err)
 	}
 	return body.Status, body.OrgID, resp.StatusCode, nil
 }
 
-func (g *nexusGateway) ReportResult(ctx context.Context, id string, success bool, result map[string]any, durationMS int64, errorMessage string) (int, error) {
+func (g *governanceGateway) ReportResult(ctx context.Context, id string, success bool, result map[string]any, durationMS int64, errorMessage string) (int, error) {
 	payload := map[string]any{
 		"success":     success,
 		"result":      result,
@@ -88,75 +88,75 @@ func (g *nexusGateway) ReportResult(ctx context.Context, id string, success bool
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
-		return 0, fmt.Errorf("marshal nexus result: %w", err)
+		return 0, fmt.Errorf("marshal governance result: %w", err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.baseURL+"/v1/requests/"+id+"/result", bytes.NewReader(raw))
 	if err != nil {
-		return 0, fmt.Errorf("build nexus result request: %w", err)
+		return 0, fmt.Errorf("build governance result request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-API-Key", g.apiKey)
 	resp, err := g.http.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("post nexus result: %w", err)
+		return 0, fmt.Errorf("post governance result: %w", err)
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode, nil
 }
 
-func (g *nexusGateway) CreateAttestation(ctx context.Context, id string, payload map[string]any) (int, error) {
+func (g *governanceGateway) CreateAttestation(ctx context.Context, id string, payload map[string]any) (int, error) {
 	raw, err := json.Marshal(payload)
 	if err != nil {
-		return 0, fmt.Errorf("marshal nexus attestation: %w", err)
+		return 0, fmt.Errorf("marshal governance attestation: %w", err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.baseURL+"/v1/requests/"+id+"/attest", bytes.NewReader(raw))
 	if err != nil {
-		return 0, fmt.Errorf("build nexus attestation request: %w", err)
+		return 0, fmt.Errorf("build governance attestation request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-API-Key", g.apiKey)
 	resp, err := g.http.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("post nexus attestation: %w", err)
+		return 0, fmt.Errorf("post governance attestation: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= http.StatusBadRequest {
-		return resp.StatusCode, buildNexusError(resp)
+		return resp.StatusCode, buildGovernanceError(resp)
 	}
 	return resp.StatusCode, nil
 }
 
-func (g *nexusGateway) GetEvidencePack(ctx context.Context, id string) (map[string]any, int, error) {
+func (g *governanceGateway) GetEvidencePack(ctx context.Context, id string) (map[string]any, int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.baseURL+"/v1/requests/"+id+"/evidence", nil)
 	if err != nil {
-		return nil, 0, fmt.Errorf("build nexus evidence request: %w", err)
+		return nil, 0, fmt.Errorf("build governance evidence request: %w", err)
 	}
 	req.Header.Set("X-API-Key", g.apiKey)
 	resp, err := g.http.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("get nexus evidence: %w", err)
+		return nil, 0, fmt.Errorf("get governance evidence: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= http.StatusBadRequest {
-		return nil, resp.StatusCode, buildNexusError(resp)
+		return nil, resp.StatusCode, buildGovernanceError(resp)
 	}
 	var out map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, resp.StatusCode, fmt.Errorf("decode nexus evidence: %w", err)
+		return nil, resp.StatusCode, fmt.Errorf("decode governance evidence: %w", err)
 	}
 	return out, resp.StatusCode, nil
 }
 
-func buildNexusError(resp *http.Response) error {
+func buildGovernanceError(resp *http.Response) error {
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-	return nexusError{
-		Kind:       classifyNexusStatus(resp.StatusCode),
+	return governanceError{
+		Kind:       classifyGovernanceStatus(resp.StatusCode),
 		StatusCode: resp.StatusCode,
 		Body:       strings.TrimSpace(string(raw)),
 	}
 }
 
-func classifyNexusStatus(status int) string {
+func classifyGovernanceStatus(status int) string {
 	switch status {
 	case http.StatusUnauthorized:
 		return "unauthorized"

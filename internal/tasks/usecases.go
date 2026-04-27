@@ -58,7 +58,7 @@ func marshalOrEmpty(label string, v any) json.RawMessage {
 	return b
 }
 
-type nexusGateway interface {
+type governanceGateway interface {
 	SubmitRequest(ctx context.Context, idempotencyKey string, body reviewclient.SubmitRequestBody) (reviewclient.SubmitResponse, error)
 	GetRequest(ctx context.Context, id string) (reviewclient.RequestSummary, int, error)
 	ReportResult(ctx context.Context, id string, success bool, result map[string]any, durationMS int64, errorMessage string) (int, error)
@@ -94,17 +94,17 @@ type OrchestratorResult struct {
 // Usecases lógica de tareas e integración con Nexus governance.
 type Usecases struct {
 	repo               Repository
-	nexus              nexusGateway
+	governance         governanceGateway
 	orchestrator       ChatOrchestrator // nil = sin LLM (solo persiste)
 	executor           taskExecutor
 	taskMemory         taskMemoryWriter
 	reviewSyncInterval time.Duration
 }
 
-func NewUsecases(repo Repository, nexus nexusGateway) *Usecases {
+func NewUsecases(repo Repository, governance governanceGateway) *Usecases {
 	return &Usecases{
 		repo:               repo,
-		nexus:              nexus,
+		governance:         governance,
 		reviewSyncInterval: defaultReviewSyncInterval,
 	}
 }
@@ -244,7 +244,7 @@ func (u *Usecases) GetDetail(ctx context.Context, id uuid.UUID) (TaskDetail, err
 			continue
 		}
 		seen[rid] = struct{}{}
-		sum, st, gErr := u.nexus.GetRequest(ctx, rid.String())
+		sum, st, gErr := u.governance.GetRequest(ctx, rid.String())
 		lr := LinkedReviewRequest{ActionID: a.ID}
 		if gErr != nil {
 			slog.Error("review get request failed", "error", gErr, "request_id", rid)
@@ -812,7 +812,7 @@ func (u *Usecases) syncTaskWithReview(ctx context.Context, t domain.Task, origin
 		nextState.ConsecutiveFailures = prevState.ConsecutiveFailures
 	}
 
-	sum, st, gErr := u.nexus.GetRequest(ctx, rid.String())
+	sum, st, gErr := u.governance.GetRequest(ctx, rid.String())
 	beforeStatus := t.Status
 	appliedEvent := ""
 
@@ -993,7 +993,7 @@ func (u *Usecases) Propose(ctx context.Context, taskID uuid.UUID, in ProposeInpu
 		Context:        string(ctxStr),
 	}
 
-	submitOut, subErr := u.nexus.SubmitRequest(ctx, idem, submitBody)
+	submitOut, subErr := u.governance.SubmitRequest(ctx, idem, submitBody)
 	if subErr != nil {
 		slog.Warn("companion propose review submit failed",
 			"task_id", taskID.String(),
@@ -1325,7 +1325,7 @@ func (u *Usecases) refreshReviewSnapshot(ctx context.Context, taskID uuid.UUID, 
 		nextState.ConsecutiveFailures = prevState.ConsecutiveFailures
 	}
 
-	sum, statusCode, getErr := u.nexus.GetRequest(ctx, reviewRequestID.String())
+	sum, statusCode, getErr := u.governance.GetRequest(ctx, reviewRequestID.String())
 	if getErr != nil {
 		nextState.LastReviewHTTPStatus = statusCode
 		nextState.LastError = getErr.Error()
@@ -1492,7 +1492,7 @@ func (u *Usecases) runTaskExecution(ctx context.Context, t domain.Task, plan dom
 }
 
 func (u *Usecases) reportExecutionToReview(ctx context.Context, reviewRequestID *uuid.UUID, result connectordomain.ExecutionResult) {
-	if u.nexus == nil || reviewRequestID == nil || *reviewRequestID == uuid.Nil {
+	if u.governance == nil || reviewRequestID == nil || *reviewRequestID == uuid.Nil {
 		return
 	}
 	success := result.Status == connectordomain.ExecSuccess
@@ -1514,7 +1514,7 @@ func (u *Usecases) reportExecutionToReview(ctx context.Context, reviewRequestID 
 	if len(result.EvidenceJSON) > 0 {
 		resultPayload["evidence"] = json.RawMessage(result.EvidenceJSON)
 	}
-	status, err := u.nexus.ReportResult(ctx, reviewRequestID.String(), success, resultPayload, result.DurationMS, result.ErrorMessage)
+	status, err := u.governance.ReportResult(ctx, reviewRequestID.String(), success, resultPayload, result.DurationMS, result.ErrorMessage)
 	if err != nil || status >= http.StatusBadRequest {
 		slog.Warn("report execution to review failed",
 			"review_request_id", reviewRequestID.String(),

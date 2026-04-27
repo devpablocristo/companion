@@ -58,8 +58,8 @@ func (a taskMemoryAdapter) UpsertTaskMemory(ctx context.Context, taskID uuid.UUI
 	return err
 }
 
-func nexusSyncInterval() time.Duration {
-	return envconfig.Duration("COMPANION_NEXUS_SYNC_INTERVAL_SEC", 30*time.Second)
+func governanceSyncInterval() time.Duration {
+	return envconfig.Duration("COMPANION_GOVERNANCE_SYNC_INTERVAL_SEC", 30*time.Second)
 }
 
 func watcherInterval() time.Duration {
@@ -68,18 +68,18 @@ func watcherInterval() time.Duration {
 
 // Config arranque del servicio Companion.
 type Config struct {
-	DatabaseURL    string
-	APIKeys        string
-	AuthIssuerURL  string
-	AuthAudience   string
-	NexusBaseURL   string
-	NexusAPIKey    string
-	PymesBaseURL   string
-	PymesAPIKey    string
-	LLMProvider    string
-	LLMAPIKey      string
-	LLMModel       string
-	MigrationFiles fs.FS
+	DatabaseURL       string
+	APIKeys           string
+	AuthIssuerURL     string
+	AuthAudience      string
+	GovernanceBaseURL string
+	GovernanceAPIKey  string
+	PymesBaseURL      string
+	PymesAPIKey       string
+	LLMProvider       string
+	LLMAPIKey         string
+	LLMModel          string
+	MigrationFiles    fs.FS
 }
 
 // NewServer abre DB, migra, monta mux y auth.
@@ -96,8 +96,8 @@ func NewServer(cfg Config) (http.Handler, func(), error) {
 		return nil, nil, fmt.Errorf("run migrations: %w", err)
 	}
 
-	nexusGateway := newNexusGateway(cfg.NexusBaseURL, cfg.NexusAPIKey)
-	rc := nexusGateway.client
+	governanceGateway := newGovernanceGateway(cfg.GovernanceBaseURL, cfg.GovernanceAPIKey)
+	rc := governanceGateway.client
 	pymesClient := pymesclient.NewClient(cfg.PymesBaseURL, cfg.PymesAPIKey)
 
 	// Connectors module
@@ -108,14 +108,14 @@ func NewServer(cfg Config) (http.Handler, func(), error) {
 	}
 	connRepo := connectors.NewPostgresRepository(db)
 	reviewChecker := connectors.NewReviewCheckerAdapter(func(c context.Context, id uuid.UUID) (string, string, int, error) {
-		return nexusGateway.GetRequestMeta(c, id.String())
+		return governanceGateway.GetRequestMeta(c, id.String())
 	})
 	connUC := connectors.NewUsecases(connRepo, connReg, reviewChecker)
 	connHandler := connectors.NewHandler(connUC)
 
 	repo := tasks.NewPostgresRepository(db)
-	uc := tasks.NewUsecases(repo, nexusGateway)
-	uc.SetReviewSyncInterval(nexusSyncInterval())
+	uc := tasks.NewUsecases(repo, governanceGateway)
+	uc.SetReviewSyncInterval(governanceSyncInterval())
 	uc.SetExecutor(connUC)
 	h := tasks.NewHandler(uc)
 
@@ -169,7 +169,7 @@ func NewServer(cfg Config) (http.Handler, func(), error) {
 	cleanup := func() {
 		db.Close()
 	}
-	if d := nexusSyncInterval(); d > 0 {
+	if d := governanceSyncInterval(); d > 0 {
 		syncCtx, syncCancel := context.WithCancel(context.Background())
 		go uc.RunReviewSyncLoop(syncCtx, d, 50)
 		prev := cleanup
