@@ -21,7 +21,10 @@ var ErrNotFound = domainerr.NotFound("not found")
 type Repository interface {
 	CreateTask(ctx context.Context, t domain.Task) (domain.Task, error)
 	GetTaskByID(ctx context.Context, id uuid.UUID) (domain.Task, error)
-	ListTasks(ctx context.Context, limit int) ([]domain.Task, error)
+	// ListTasks devuelve tareas. Si orgID es no-vacío, filtra a nivel SQL
+	// por (org_id = orgID OR org_id IS NULL OR org_id = '') para preservar
+	// aislamiento multi-tenant. Si orgID es vacío, devuelve todas las tareas.
+	ListTasks(ctx context.Context, orgID string, limit int) ([]domain.Task, error)
 	UpdateTask(ctx context.Context, t domain.Task) (domain.Task, error)
 	ListTasksByStatus(ctx context.Context, status string, limit int) ([]domain.Task, error)
 	ListTasksPendingReviewSync(ctx context.Context, now time.Time, limit int) ([]domain.Task, error)
@@ -99,11 +102,23 @@ func (r *PostgresRepository) GetTaskByID(ctx context.Context, id uuid.UUID) (dom
 	return t, nil
 }
 
-func (r *PostgresRepository) ListTasks(ctx context.Context, limit int) ([]domain.Task, error) {
+func (r *PostgresRepository) ListTasks(ctx context.Context, orgID string, limit int) ([]domain.Task, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := r.db.Pool().Query(ctx, selectTask+` ORDER BY t.updated_at DESC LIMIT $1`, limit)
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if orgID != "" {
+		rows, err = r.db.Pool().Query(ctx,
+			selectTask+` WHERE t.org_id = $1 OR t.org_id IS NULL OR t.org_id = ''
+				ORDER BY t.updated_at DESC LIMIT $2`,
+			orgID, limit)
+	} else {
+		rows, err = r.db.Pool().Query(ctx,
+			selectTask+` ORDER BY t.updated_at DESC LIMIT $1`, limit)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("list tasks: %w", err)
 	}

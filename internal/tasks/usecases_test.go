@@ -56,9 +56,12 @@ func (f *fakeRepo) GetTaskByID(ctx context.Context, id uuid.UUID) (domain.Task, 
 	return t, nil
 }
 
-func (f *fakeRepo) ListTasks(ctx context.Context, limit int) ([]domain.Task, error) {
+func (f *fakeRepo) ListTasks(ctx context.Context, orgID string, limit int) ([]domain.Task, error) {
 	var out []domain.Task
 	for _, t := range f.tasks {
+		if orgID != "" && t.OrgID != "" && t.OrgID != orgID {
+			continue
+		}
 		if state, ok := f.reviewSync[t.ID]; ok {
 			t.ReviewStatus = state.LastReviewStatus
 			t.ReviewLastCheckedAt = &state.LastCheckedAt

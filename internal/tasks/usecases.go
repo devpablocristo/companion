@@ -161,8 +161,8 @@ func (u *Usecases) Create(ctx context.Context, in CreateTaskInput) (domain.Task,
 	return out, nil
 }
 
-func (u *Usecases) List(ctx context.Context, limit int) ([]domain.Task, error) {
-	return u.repo.ListTasks(ctx, limit)
+func (u *Usecases) List(ctx context.Context, orgID string, limit int) ([]domain.Task, error) {
+	return u.repo.ListTasks(ctx, orgID, limit)
 }
 
 func (u *Usecases) Get(ctx context.Context, id uuid.UUID) (domain.Task, error) {

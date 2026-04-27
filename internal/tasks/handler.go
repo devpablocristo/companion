@@ -23,7 +23,7 @@ const (
 
 type taskUsecase interface {
 	Create(ctx context.Context, in CreateTaskInput) (domain.Task, error)
-	List(ctx context.Context, limit int) ([]domain.Task, error)
+	List(ctx context.Context, orgID string, limit int) ([]domain.Task, error)
 	Get(ctx context.Context, id uuid.UUID) (domain.Task, error)
 	GetDetail(ctx context.Context, id uuid.UUID) (TaskDetail, error)
 	AddMessage(ctx context.Context, taskID uuid.UUID, in AddMessageInput) (domain.TaskMessage, error)
@@ -99,13 +99,16 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	list, err := h.uc.List(r.Context(), limit)
+	list, err := h.uc.List(r.Context(), principalOrgID(r), limit)
 	if err != nil {
 		httpjson.WriteFlatInternalError(w, err, "list tasks failed")
 		return
 	}
 	out := make([]tasksdto.TaskResponse, 0, len(list))
 	for _, t := range list {
+		// canAccessTaskOrg queda como defense-in-depth: el SQL ya filtra,
+		// pero si el repo se cambia o un fake olvida el filtro, esto evita
+		// fugas cross-org.
 		if !canAccessTaskOrg(r, t) {
 			continue
 		}
