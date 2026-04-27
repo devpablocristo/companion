@@ -235,7 +235,11 @@ func (uc *Usecases) SeedDefaultConnectors(ctx context.Context) error {
 			}
 		}
 		if !found {
-			capsJSON, _ := json.Marshal(conn.Capabilities())
+			capsJSON, mErr := json.Marshal(conn.Capabilities())
+			if mErr != nil {
+				slog.Error("seed connector marshal capabilities", "kind", conn.Kind(), "error", mErr)
+				capsJSON = []byte(`[]`)
+			}
 			_, err := uc.repo.SaveConnector(ctx, domain.Connector{
 				Name:       conn.Kind(),
 				Kind:       conn.Kind(),

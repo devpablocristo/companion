@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -59,10 +60,14 @@ func (m *MockConnector) Execute(ctx context.Context, spec domain.ExecutionSpec) 
 		"payload", string(spec.Payload),
 		"idempotency_key", spec.IdempotencyKey,
 	)
-	resultJSON, _ := json.Marshal(map[string]string{
+	resultJSON, err := json.Marshal(map[string]string{
 		"mock":    "true",
 		"message": "operation logged successfully",
 	})
+	if err != nil {
+		// map[string]string es 100% marshalable; este return es por contrato.
+		return domain.ExecutionResult{}, fmt.Errorf("marshal mock result: %w", err)
+	}
 	return domain.ExecutionResult{
 		ID:              uuid.New(),
 		ConnectorID:     spec.ConnectorID,

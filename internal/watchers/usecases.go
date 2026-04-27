@@ -178,7 +178,11 @@ func (uc *Usecases) RunWatcher(ctx context.Context, watcherID uuid.UUID) (*domai
 	// Actualizar último resultado
 	now := time.Now().UTC()
 	w.LastRunAt = &now
-	resultJSON, _ := json.Marshal(result)
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		slog.Error("watcher marshal result failed", "watcher_id", w.ID, "error", err)
+		resultJSON = []byte(`{}`)
+	}
 	w.LastResult = resultJSON
 	if _, err := uc.repo.UpdateWatcher(ctx, w); err != nil {
 		slog.Error("watcher update last run failed", "watcher_id", w.ID, "error", err)
@@ -257,7 +261,10 @@ func (uc *Usecases) queryPymes(ctx context.Context, w domain.Watcher) ([]domain.
 			cfg.ThresholdPercent = 20
 		}
 		if comparison.DropPercent >= cfg.ThresholdPercent {
-			meta, _ := json.Marshal(comparison)
+			meta, err := json.Marshal(comparison)
+			if err != nil {
+				return nil, fmt.Errorf("marshal revenue comparison: %w", err)
+			}
 			return []domain.PymesItem{{
 				ID:       "revenue_alert",
 				Type:     "revenue",
@@ -274,13 +281,16 @@ func (uc *Usecases) queryPymes(ctx context.Context, w domain.Watcher) ([]domain.
 
 func (uc *Usecases) processItem(ctx context.Context, w domain.Watcher, item domain.PymesItem) (domain.Proposal, error) {
 	actionType := actionTypeForWatcher(w.WatcherType)
-	params, _ := json.Marshal(map[string]string{
+	params, err := json.Marshal(map[string]string{
 		"item_id":   item.ID,
 		"item_type": item.Type,
 		"item_name": item.Name,
 		"phone":     item.Phone,
 		"party_id":  item.PartyID,
 	})
+	if err != nil {
+		return domain.Proposal{}, fmt.Errorf("marshal proposal params: %w", err)
+	}
 
 	proposal := domain.Proposal{
 		WatcherID:      w.ID,
@@ -291,10 +301,11 @@ func (uc *Usecases) processItem(ctx context.Context, w domain.Watcher, item doma
 		Reason:         fmt.Sprintf("Watcher %s detectó: %s", w.Name, item.Name),
 	}
 
-	proposal, err := uc.repo.CreateProposal(ctx, proposal)
+	created, err := uc.repo.CreateProposal(ctx, proposal)
 	if err != nil {
 		return proposal, fmt.Errorf("create proposal: %w", err)
 	}
+	proposal = created
 
 	// Consultar Review
 	idempotencyKey := fmt.Sprintf("companion-watcher-%s-%s", w.ID, proposal.ID)
@@ -328,8 +339,11 @@ func (uc *Usecases) processItem(ctx context.Context, w domain.Watcher, item doma
 		proposal.ResolvedAt = &now
 		if execErr != nil {
 			proposal.ExecutionStatus = domain.ProposalFailed
-			errMsg := execErr.Error()
-			errJSON, _ := json.Marshal(map[string]string{"error": errMsg})
+			errJSON, mErr := json.Marshal(map[string]string{"error": execErr.Error()})
+			if mErr != nil {
+				slog.Error("watcher marshal exec error failed", "proposal_id", proposal.ID, "error", mErr)
+				errJSON = []byte(`{"error":"marshal_failed"}`)
+			}
 			proposal.ExecutionResult = errJSON
 		} else {
 			proposal.ExecutionStatus = domain.ProposalExecuted
@@ -411,7 +425,10 @@ func (uc *Usecases) RunWatcherLoop(ctx context.Context, interval time.Duration, 
 	})
 }
 
-// SyncPendingProposals sincroniza propuestas pendientes con Review.
+// SyncPendingProposals reconcilia propuestas que quedaron en require_approval:
+// pollea Nexus por su decisión final y, si fue aprobada, gatilla la ejecución
+// de la acción que originalmente había propuesto el watcher. Si fue rechazada,
+// marca skipped. C14 — antes solo loguea "execution not implemented".
 func (uc *Usecases) SyncPendingProposals(ctx context.Context, orgID string, limit int) {
 	proposals, err := uc.repo.PendingProposals(ctx, orgID)
 	if err != nil {
@@ -430,20 +447,104 @@ func (uc *Usecases) SyncPendingProposals(ctx context.Context, orgID string, limi
 			continue
 		}
 		status := summary.Status
-		if status == "approved" || status == "allowed" || status == "rejected" || status == "denied" {
-			decision := summary.Decision
-			p.ReviewDecision = &decision
-			now := time.Now().UTC()
-			p.ResolvedAt = &now
-			if status == "approved" || status == "allowed" {
-				p.ExecutionStatus = domain.ProposalSkipped
-				p.ExecutionResult = json.RawMessage(`{"status":"approved_not_executed","reason":"delayed execution is not implemented in sync loop"}`)
-			} else {
-				p.ExecutionStatus = domain.ProposalSkipped
-			}
+		if status != "approved" && status != "allowed" && status != "rejected" && status != "denied" {
+			continue
+		}
+
+		decision := summary.Decision
+		p.ReviewDecision = &decision
+		now := time.Now().UTC()
+		p.ResolvedAt = &now
+
+		if status == "rejected" || status == "denied" {
+			p.ExecutionStatus = domain.ProposalSkipped
 			if err := uc.repo.UpdateProposal(ctx, p); err != nil {
 				slog.Error("sync update proposal failed", "proposal_id", p.ID, "error", err)
 			}
+			continue
+		}
+
+		// approved/allowed: reconstituir contexto y ejecutar.
+		w, gErr := uc.repo.GetWatcher(ctx, p.WatcherID)
+		if gErr != nil {
+			slog.Error("sync get watcher failed", "proposal_id", p.ID, "watcher_id", p.WatcherID, "error", gErr)
+			p.ExecutionStatus = domain.ProposalFailed
+			p.ExecutionResult = marshalSyncErrorResult("get_watcher_failed", gErr)
+			if err := uc.repo.UpdateProposal(ctx, p); err != nil {
+				slog.Error("sync update proposal failed", "proposal_id", p.ID, "error", err)
+			}
+			continue
+		}
+
+		item, iErr := itemFromProposalParams(p.Params)
+		if iErr != nil {
+			slog.Error("sync rebuild item failed", "proposal_id", p.ID, "error", iErr)
+			p.ExecutionStatus = domain.ProposalFailed
+			p.ExecutionResult = marshalSyncErrorResult("rebuild_item_failed", iErr)
+			if err := uc.repo.UpdateProposal(ctx, p); err != nil {
+				slog.Error("sync update proposal failed", "proposal_id", p.ID, "error", err)
+			}
+			continue
+		}
+
+		if execErr := uc.executeAction(ctx, w, item); execErr != nil {
+			slog.Error("sync execute approved proposal failed", "proposal_id", p.ID, "error", execErr)
+			p.ExecutionStatus = domain.ProposalFailed
+			p.ExecutionResult = marshalSyncErrorResult("execution_failed", execErr)
+		} else {
+			p.ExecutionStatus = domain.ProposalExecuted
+			p.ExecutionResult = json.RawMessage(`{"status":"sent","via":"sync_loop"}`)
+		}
+		if err := uc.repo.UpdateProposal(ctx, p); err != nil {
+			slog.Error("sync update proposal failed", "proposal_id", p.ID, "error", err)
 		}
 	}
+}
+
+// itemFromProposalParams reconstruye el PymesItem original a partir del JSON
+// que el watcher persistió en proposal.Params al crear la propuesta. Si el
+// schema no coincide, devuelve error para que la sync lo marque como failed
+// con un motivo claro en vez de ejecutar con datos parciales.
+func itemFromProposalParams(params json.RawMessage) (domain.PymesItem, error) {
+	if len(params) == 0 {
+		return domain.PymesItem{}, fmt.Errorf("proposal params empty")
+	}
+	var raw struct {
+		ItemID   string `json:"item_id"`
+		ItemType string `json:"item_type"`
+		ItemName string `json:"item_name"`
+		Phone    string `json:"phone"`
+		PartyID  string `json:"party_id"`
+	}
+	if err := json.Unmarshal(params, &raw); err != nil {
+		return domain.PymesItem{}, fmt.Errorf("unmarshal proposal params: %w", err)
+	}
+	if raw.ItemID == "" {
+		return domain.PymesItem{}, fmt.Errorf("proposal params missing item_id")
+	}
+	return domain.PymesItem{
+		ID:      raw.ItemID,
+		Type:    raw.ItemType,
+		Name:    raw.ItemName,
+		Phone:   raw.Phone,
+		PartyID: raw.PartyID,
+	}, nil
+}
+
+func marshalSyncErrorResult(reason string, err error) json.RawMessage {
+	return marshalOrEmpty("sync_error_result", map[string]string{
+		"status": "failed",
+		"reason": reason,
+		"error":  err.Error(),
+	})
+}
+
+// marshalOrEmpty serializa v y devuelve "{}" loguenado el error si falla.
+func marshalOrEmpty(label string, v any) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		slog.Error("watchers marshal payload failed", "label", label, "error", err)
+		return json.RawMessage(`{}`)
+	}
+	return b
 }

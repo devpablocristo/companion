@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -166,7 +167,14 @@ func (p *PymesConnector) Execute(ctx context.Context, spec domain.ExecutionSpec)
 		errMsg = execErr.Error()
 	}
 
-	resultJSON, _ := json.Marshal(resultData)
+	resultJSON, mErr := json.Marshal(resultData)
+	if mErr != nil {
+		// Marshal de un map[string]any controlado: solo puede fallar si el
+		// connector mete tipos no-marshalables (channels, funcs). Logueamos
+		// y degradamos en lugar de bloquear el reportback de la ejecución.
+		slog.Error("pymes connector marshal result", "operation", spec.Operation, "error", mErr)
+		resultJSON = []byte(`{}`)
+	}
 
 	return domain.ExecutionResult{
 		ID:              uuid.New(),

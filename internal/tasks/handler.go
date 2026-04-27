@@ -3,6 +3,7 @@ package tasks
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -274,7 +275,7 @@ func (h *Handler) propose(w http.ResponseWriter, r *http.Request) {
 			httpjson.WriteFlatError(w, http.StatusConflict, "CONFLICT", "invalid task state")
 			return
 		}
-		if strings.HasPrefix(err.Error(), "review submit:") && t.ID != uuid.Nil {
+		if errors.Is(err, ErrReviewSubmit) && t.ID != uuid.Nil {
 			httpjson.WriteJSON(w, http.StatusBadGateway, map[string]any{
 				"code":    "REVIEW_SUBMIT_FAILED",
 				"message": "review request failed",

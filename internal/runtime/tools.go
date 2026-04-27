@@ -67,7 +67,10 @@ func NewToolKit(rc *reviewclient.Client, memUC *memory.Usecases, watcherUC *watc
 			return `{"status": "sin datos disponibles"}`, nil
 		}
 		result := map[string]any{"overview": parts}
-		b, _ := json.Marshal(result)
+		b, err := json.Marshal(result)
+		if err != nil {
+			return "", fmt.Errorf("marshal overview result: %w", err)
+		}
 		return string(b), nil
 	})
 
@@ -135,7 +138,10 @@ func NewToolKit(rc *reviewclient.Client, memUC *memory.Usecases, watcherUC *watc
 		if err != nil {
 			return "", fmt.Errorf("list watchers: %w", err)
 		}
-		b, _ := json.Marshal(map[string]any{"watchers": wList})
+		b, err := json.Marshal(map[string]any{"watchers": wList})
+		if err != nil {
+			return "", fmt.Errorf("marshal watchers: %w", err)
+		}
 		return string(b), nil
 	})
 
@@ -238,7 +244,10 @@ func NewToolKit(rc *reviewclient.Client, memUC *memory.Usecases, watcherUC *watc
 		for _, e := range entries {
 			items = append(items, item{Key: e.Key, Content: e.ContentText})
 		}
-		b, _ := json.Marshal(map[string]any{"memories": items})
+		b, err := json.Marshal(map[string]any{"memories": items})
+		if err != nil {
+			return "", fmt.Errorf("marshal memories: %w", err)
+		}
 		return string(b), nil
 	})
 

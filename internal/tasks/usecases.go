@@ -46,6 +46,18 @@ const (
 	maxReviewSyncBackoff      = 10 * time.Minute
 )
 
+// marshalOrEmpty serializa v a JSON. Si falla (typically map con channels o
+// funcs metidos por error), loguea y devuelve "{}" para que el caller no
+// rompa pipelines de proyección/audit por un payload mal formado.
+func marshalOrEmpty(label string, v any) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		slog.Error("tasks marshal payload failed", "label", label, "error", err)
+		return json.RawMessage(`{}`)
+	}
+	return b
+}
+
 type nexusGateway interface {
 	SubmitRequest(ctx context.Context, idempotencyKey string, body reviewclient.SubmitRequestBody) (reviewclient.SubmitResponse, error)
 	GetRequest(ctx context.Context, id string) (reviewclient.RequestSummary, int, error)
@@ -679,8 +691,7 @@ func buildTaskFactsPayload(snapshot taskMemorySnapshot, reason string) json.RawM
 			"verification_checked_at": snapshot.ExecutionState.VerificationResult.CheckedAt.UTC().Format(time.RFC3339),
 		}
 	}
-	out, _ := json.Marshal(payload)
-	return out
+	return marshalOrEmpty("task_facts", payload)
 }
 
 func (u *Usecases) syncTaskMemory(ctx context.Context, taskID uuid.UUID, reason string) {
@@ -692,7 +703,7 @@ func (u *Usecases) syncTaskMemory(ctx context.Context, taskID uuid.UUID, reason 
 		slog.Warn("companion project task memory failed", "task_id", taskID.String(), "reason", reason, "error", err)
 		return
 	}
-	summaryPayload, _ := json.Marshal(map[string]any{
+	summaryPayload := marshalOrEmpty("task_summary", map[string]any{
 		"projection_reason": reason,
 		"status":            snapshot.Task.Status,
 		"review_status":     snapshot.Task.ReviewStatus,
@@ -741,8 +752,7 @@ func buildReviewSyncActionPayload(origin string, prev *domain.TaskReviewSyncStat
 		}
 		payload["previous"] = previous
 	}
-	out, _ := json.Marshal(payload)
-	return out
+	return marshalOrEmpty("review_sync_payload", payload)
 }
 
 func (u *Usecases) latestReviewRequestIDForTask(ctx context.Context, taskID uuid.UUID, state *domain.TaskReviewSyncState) (uuid.UUID, error) {
@@ -936,7 +946,7 @@ func (u *Usecases) Propose(ctx context.Context, taskID uuid.UUID, in ProposeInpu
 	payload := map[string]any{
 		"note": in.Note,
 	}
-	pj, _ := json.Marshal(payload)
+	pj := marshalOrEmpty("propose_action_payload", payload)
 	action, err := u.repo.InsertAction(ctx, domain.TaskAction{
 		TaskID:     taskID,
 		ActionType: TaskActionPropose,
@@ -963,7 +973,7 @@ func (u *Usecases) Propose(ctx context.Context, taskID uuid.UUID, in ProposeInpu
 		"task_goal":  t.Goal,
 		"note":       in.Note,
 	}
-	ctxStr, _ := json.Marshal(ctxJSON)
+	ctxStr := marshalOrEmpty("propose_context", ctxJSON)
 
 	reason := t.Title
 	if in.Note != "" {
@@ -995,7 +1005,7 @@ func (u *Usecases) Propose(ctx context.Context, taskID uuid.UUID, in ProposeInpu
 		if ge != nil {
 			return domain.Task{}, action, zeroSub, ge
 		}
-		return t2, action, zeroSub, fmt.Errorf("review submit: %w", subErr)
+		return t2, action, zeroSub, fmt.Errorf("%w: %v", ErrReviewSubmit, subErr)
 	}
 	reqUUID, perr := uuid.Parse(submitOut.RequestID)
 	if perr != nil {
@@ -1110,7 +1120,7 @@ func (u *Usecases) SetExecutionPlan(ctx context.Context, taskID uuid.UUID, in Se
 	}
 
 	if executionPlanChanged(prevPlan, plan) {
-		payload, _ := json.Marshal(map[string]any{
+		payload := marshalOrEmpty("execution_plan_action", map[string]any{
 			"connector_id":    plan.ConnectorID.String(),
 			"operation":       plan.Operation,
 			"payload":         json.RawMessage(plan.Payload),
@@ -1137,7 +1147,7 @@ type ExecuteTaskOutput struct {
 }
 
 func buildConnectorExecutionPayload(result connectordomain.ExecutionResult) json.RawMessage {
-	payload, _ := json.Marshal(map[string]any{
+	return marshalOrEmpty("connector_execution_payload", map[string]any{
 		"id":              result.ID.String(),
 		"connector_id":    result.ConnectorID.String(),
 		"org_id":          result.OrgID,
@@ -1159,11 +1169,10 @@ func buildConnectorExecutionPayload(result connectordomain.ExecutionResult) json
 			return ""
 		}(),
 	})
-	return payload
 }
 
 func buildVerificationPayload(result connectordomain.ExecutionResult, verification domain.TaskVerificationResult) json.RawMessage {
-	payload, _ := json.Marshal(map[string]any{
+	return marshalOrEmpty("verification_payload", map[string]any{
 		"execution_id":        result.ID.String(),
 		"execution_status":    result.Status,
 		"verification_status": verification.Status,
@@ -1172,7 +1181,6 @@ func buildVerificationPayload(result connectordomain.ExecutionResult, verificati
 		"details":             json.RawMessage(verification.Details),
 		"retryable":           result.Retryable,
 	})
-	return payload
 }
 
 func hasResultPayload(result json.RawMessage) bool {
@@ -1197,7 +1205,7 @@ func hasVerificationEvidence(result connectordomain.ExecutionResult) bool {
 
 func verifyExecutionResult(result connectordomain.ExecutionResult) domain.TaskVerificationResult {
 	checkedAt := time.Now().UTC()
-	details, _ := json.Marshal(map[string]any{
+	details := marshalOrEmpty("verification_details", map[string]any{
 		"execution_status":       result.Status,
 		"external_ref_present":   strings.TrimSpace(result.ExternalRef) != "",
 		"result_payload_present": hasResultPayload(result.ResultJSON),
@@ -1596,7 +1604,7 @@ func (u *Usecases) RetryTask(ctx context.Context, taskID uuid.UUID) (ExecuteTask
 		return out, ErrInvalidTaskState
 	}
 
-	payload, _ := json.Marshal(map[string]any{
+	payload := marshalOrEmpty("retry_execution_action", map[string]any{
 		"retry_count_before":    state.RetryCount,
 		"last_execution_status": state.LastExecutionStatus,
 		"last_error":            state.LastError,
