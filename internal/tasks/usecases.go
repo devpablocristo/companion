@@ -1484,7 +1484,7 @@ func (u *Usecases) runTaskExecution(ctx context.Context, t domain.Task, plan dom
 }
 
 func (u *Usecases) reportExecutionToReview(ctx context.Context, reviewRequestID *uuid.UUID, result connectordomain.ExecutionResult) {
-	if u.review == nil || reviewRequestID == nil || *reviewRequestID == uuid.Nil {
+	if u.nexus == nil || reviewRequestID == nil || *reviewRequestID == uuid.Nil {
 		return
 	}
 	success := result.Status == connectordomain.ExecSuccess
