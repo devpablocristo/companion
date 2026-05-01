@@ -23,6 +23,8 @@ type Repository interface {
 	DeleteConnector(ctx context.Context, id uuid.UUID) error
 
 	SaveExecution(ctx context.Context, r domain.ExecutionResult) error
+	AcquireExecutionLock(ctx context.Context, lockKey string) (bool, error)
+	ReleaseExecutionLock(ctx context.Context, lockKey string) error
 	GetExecutionByIdempotency(ctx context.Context, taskID uuid.UUID, operation string, reviewRequestID *uuid.UUID, idempotencyKey string) (domain.ExecutionResult, error)
 	ListExecutions(ctx context.Context, connectorID uuid.UUID, limit int) ([]domain.ExecutionResult, error)
 }
@@ -148,6 +150,30 @@ func (uc *Usecases) Execute(ctx context.Context, spec domain.ExecutionSpec) (dom
 		return domain.ExecutionResult{}, fmt.Errorf("validate spec: %w", err)
 	}
 
+	lockKey := executionLockKey(spec)
+	if lockKey != "" {
+		acquired, err := uc.repo.AcquireExecutionLock(ctx, lockKey)
+		if err != nil {
+			return domain.ExecutionResult{}, err
+		}
+		if !acquired {
+			return domain.ExecutionResult{}, fmt.Errorf("%w: execution already in progress", ErrConflict)
+		}
+		defer func() {
+			if err := uc.repo.ReleaseExecutionLock(context.Background(), lockKey); err != nil {
+				slog.Error("release execution lock", "error", err, "lock_key", lockKey)
+			}
+		}()
+
+		existing, err := uc.repo.GetExecutionByIdempotency(ctx, *spec.TaskID, spec.Operation, spec.ReviewRequestID, spec.IdempotencyKey)
+		if err == nil && existing.ID != uuid.Nil {
+			return existing, nil
+		}
+		if err != nil && !IsNotFound(err) {
+			return domain.ExecutionResult{}, fmt.Errorf("get execution by idempotency after lock: %w", err)
+		}
+	}
+
 	// Ejecutar
 	result, err := conn.Execute(ctx, spec)
 	if err != nil {
@@ -166,7 +192,13 @@ func (uc *Usecases) Execute(ctx context.Context, spec domain.ExecutionSpec) (dom
 
 	// Persistir resultado
 	if saveErr := uc.repo.SaveExecution(ctx, result); saveErr != nil {
-		slog.Error("save execution result", "error", saveErr, "connector", conn.ID())
+		if IsConflict(saveErr) && spec.IdempotencyKey != "" && spec.TaskID != nil {
+			existing, err := uc.repo.GetExecutionByIdempotency(ctx, *spec.TaskID, spec.Operation, spec.ReviewRequestID, spec.IdempotencyKey)
+			if err == nil && existing.ID != uuid.Nil {
+				return existing, nil
+			}
+		}
+		return domain.ExecutionResult{}, fmt.Errorf("save execution result: %w", saveErr)
 	}
 
 	return result, nil
@@ -320,6 +352,17 @@ func ensureConnectorOrg(connectorOrgID, specOrgID string) error {
 		return nil
 	}
 	return ErrForbidden
+}
+
+func executionLockKey(spec domain.ExecutionSpec) string {
+	if spec.TaskID == nil || strings.TrimSpace(spec.IdempotencyKey) == "" {
+		return ""
+	}
+	reviewID := "none"
+	if spec.ReviewRequestID != nil {
+		reviewID = spec.ReviewRequestID.String()
+	}
+	return fmt.Sprintf("connector-execution:%s:%s:%s:%s", spec.TaskID.String(), spec.Operation, reviewID, strings.TrimSpace(spec.IdempotencyKey))
 }
 
 func buildExecutionEvidence(config domain.Connector, capability domain.Capability, spec domain.ExecutionSpec, result domain.ExecutionResult) json.RawMessage {

@@ -31,6 +31,8 @@ github.com/devpablocristo/core/config/go v0.1.0 h1:dMfXW2EqXAp+l0g6GBliIbUq48DMx
 github.com/devpablocristo/core/config/go v0.1.0/go.mod h1:KKn+UbKp8kxcBn+t2x3dwbMXmFw0PSvkDiQeZhCb89g=
 github.com/devpablocristo/core/databases/postgres/go v0.1.0 h1:irhRYxwWpzNchnf6Sqbev3GMWrH2QVN0h1G705EpYX8=
 github.com/devpablocristo/core/databases/postgres/go v0.1.0/go.mod h1:6lpx7COXzInJodKpqsLonSyzkcUIH3raRV2AEBCy7BQ=
+github.com/devpablocristo/core/databases/postgres/go v0.1.1 h1:bvMaT5i+AFUeKdYDRkmL3p5rEfTwxv8k8M6YD15ByEY=
+github.com/devpablocristo/core/databases/postgres/go v0.1.1/go.mod h1:6lpx7COXzInJodKpqsLonSyzkcUIH3raRV2AEBCy7BQ=
 github.com/devpablocristo/core/errors/go v0.1.0 h1:AGcc9fPrlymjOhrh/rtFx+gqWcRdZJkUff1qivVNjkY=
 github.com/devpablocristo/core/errors/go v0.1.0/go.mod h1:Ju3mqSVdV7FlIf4/FtQt8U8+nd0EC+erBj+Kk9xjx+c=
 github.com/devpablocristo/core/governance/go v0.0.0-20260328151810-084828e80b26 h1:JNfpK0nrO7s4XbPBXLLBRsbWdnaw/mO2S4WMQ/6FEs0=

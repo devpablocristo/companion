@@ -20,7 +20,6 @@ check_dir() {
   fi
 }
 
-check_dir "$ROOT/nexus/migrations"
-check_dir "$ROOT/companion/migrations"
+check_dir "$ROOT/migrations"
 
 echo "Migration version checks passed."

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -16,9 +18,13 @@ import (
 type fakeConnectorRepo struct {
 	connectors map[uuid.UUID]domain.Connector
 	executions []domain.ExecutionResult
+	locks      map[string]bool
+	mu         sync.Mutex
 }
 
 func (f *fakeConnectorRepo) SaveConnector(ctx context.Context, c domain.Connector) (domain.Connector, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.connectors == nil {
 		f.connectors = make(map[uuid.UUID]domain.Connector)
 	}
@@ -30,6 +36,8 @@ func (f *fakeConnectorRepo) SaveConnector(ctx context.Context, c domain.Connecto
 }
 
 func (f *fakeConnectorRepo) GetConnector(ctx context.Context, id uuid.UUID) (domain.Connector, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	c, ok := f.connectors[id]
 	if !ok {
 		return domain.Connector{}, ErrNotFound
@@ -38,6 +46,8 @@ func (f *fakeConnectorRepo) GetConnector(ctx context.Context, id uuid.UUID) (dom
 }
 
 func (f *fakeConnectorRepo) ListConnectors(ctx context.Context) ([]domain.Connector, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	var out []domain.Connector
 	for _, c := range f.connectors {
 		out = append(out, c)
@@ -46,21 +56,55 @@ func (f *fakeConnectorRepo) ListConnectors(ctx context.Context) ([]domain.Connec
 }
 
 func (f *fakeConnectorRepo) UpdateConnector(ctx context.Context, c domain.Connector) (domain.Connector, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.connectors[c.ID] = c
 	return c, nil
 }
 
 func (f *fakeConnectorRepo) DeleteConnector(ctx context.Context, id uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	delete(f.connectors, id)
 	return nil
 }
 
 func (f *fakeConnectorRepo) SaveExecution(ctx context.Context, r domain.ExecutionResult) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.executions = append(f.executions, r)
 	return nil
 }
 
+func (f *fakeConnectorRepo) AcquireExecutionLock(ctx context.Context, lockKey string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if lockKey == "" {
+		return true, nil
+	}
+	if f.locks == nil {
+		f.locks = make(map[string]bool)
+	}
+	if f.locks[lockKey] {
+		return false, nil
+	}
+	f.locks[lockKey] = true
+	return true, nil
+}
+
+func (f *fakeConnectorRepo) ReleaseExecutionLock(ctx context.Context, lockKey string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if lockKey == "" {
+		return nil
+	}
+	delete(f.locks, lockKey)
+	return nil
+}
+
 func (f *fakeConnectorRepo) GetExecutionByIdempotency(ctx context.Context, taskID uuid.UUID, operation string, reviewRequestID *uuid.UUID, idempotencyKey string) (domain.ExecutionResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for _, execution := range f.executions {
 		if execution.TaskID == nil || *execution.TaskID != taskID {
 			continue
@@ -79,6 +123,8 @@ func (f *fakeConnectorRepo) GetExecutionByIdempotency(ctx context.Context, taskI
 }
 
 func (f *fakeConnectorRepo) ListExecutions(ctx context.Context, connectorID uuid.UUID, limit int) ([]domain.ExecutionResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	var out []domain.ExecutionResult
 	for _, execution := range f.executions {
 		if execution.ConnectorID == connectorID {
@@ -97,6 +143,77 @@ type stubChecker struct {
 func (s *stubChecker) AuthorizeExecution(ctx context.Context, reviewRequestID uuid.UUID, orgID string) (bool, error) {
 	s.calls++
 	return s.approved, s.err
+}
+
+type blockingConnector struct {
+	started chan struct{}
+	release chan struct{}
+
+	startOnce sync.Once
+	mu        sync.Mutex
+	calls     int
+}
+
+func (b *blockingConnector) ID() string   { return "blocking" }
+func (b *blockingConnector) Kind() string { return "blocking" }
+
+func (b *blockingConnector) Capabilities() []domain.Capability {
+	return []domain.Capability{
+		{
+			Operation:      "blocking.write",
+			Mode:           domain.CapabilityModeWrite,
+			SideEffect:     true,
+			RequiresReview: true,
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"message"},
+			},
+		},
+	}
+}
+
+func (b *blockingConnector) Validate(spec domain.ExecutionSpec) error {
+	return nil
+}
+
+func (b *blockingConnector) Execute(ctx context.Context, spec domain.ExecutionSpec) (domain.ExecutionResult, error) {
+	b.mu.Lock()
+	b.calls++
+	b.mu.Unlock()
+	b.startOnce.Do(func() { close(b.started) })
+
+	select {
+	case <-ctx.Done():
+		return domain.ExecutionResult{}, ctx.Err()
+	case <-b.release:
+	}
+
+	resultJSON, err := json.Marshal(map[string]string{"status": "ok"})
+	if err != nil {
+		return domain.ExecutionResult{}, err
+	}
+	return domain.ExecutionResult{
+		ID:              uuid.New(),
+		ConnectorID:     spec.ConnectorID,
+		OrgID:           spec.OrgID,
+		ActorID:         spec.ActorID,
+		Operation:       spec.Operation,
+		Status:          domain.ExecSuccess,
+		ExternalRef:     "blocking-" + uuid.New().String()[:8],
+		Payload:         spec.Payload,
+		ResultJSON:      json.RawMessage(resultJSON),
+		DurationMS:      1,
+		IdempotencyKey:  spec.IdempotencyKey,
+		TaskID:          spec.TaskID,
+		ReviewRequestID: spec.ReviewRequestID,
+		CreatedAt:       time.Now().UTC(),
+	}, nil
+}
+
+func (b *blockingConnector) CallCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.calls
 }
 
 func TestUsecases_Execute_resolvesConnectorByKind(t *testing.T) {
@@ -355,6 +472,69 @@ func TestUsecases_Execute_reusesIdempotentExecution(t *testing.T) {
 	}
 	if len(repo.executions) != 1 {
 		t.Fatalf("expected one persisted execution, got %d", len(repo.executions))
+	}
+}
+
+func TestUsecases_Execute_conflictsConcurrentIdempotentExecution(t *testing.T) {
+	repo := &fakeConnectorRepo{connectors: make(map[uuid.UUID]domain.Connector)}
+	connectorID := uuid.New()
+	repo.connectors[connectorID] = domain.Connector{
+		ID:      connectorID,
+		Name:    "Blocking Connector",
+		Kind:    "blocking",
+		Enabled: true,
+	}
+	conn := &blockingConnector{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	reg := registry.NewRegistry()
+	reg.Register(conn)
+	uc := NewUsecases(repo, reg, &stubChecker{approved: true})
+	reviewRequestID := uuid.New()
+	taskID := uuid.New()
+	spec := domain.ExecutionSpec{
+		ConnectorID:     connectorID,
+		Operation:       "blocking.write",
+		Payload:         json.RawMessage(`{"message":"hello"}`),
+		IdempotencyKey:  "idem-concurrent",
+		TaskID:          &taskID,
+		ReviewRequestID: &reviewRequestID,
+	}
+
+	type executionResult struct {
+		result domain.ExecutionResult
+		err    error
+	}
+	done := make(chan executionResult, 1)
+	go func() {
+		result, err := uc.Execute(context.Background(), spec)
+		done <- executionResult{result: result, err: err}
+	}()
+
+	<-conn.started
+	_, err := uc.Execute(context.Background(), spec)
+	if !IsConflict(err) {
+		t.Fatalf("expected concurrent idempotent execution conflict, got %v", err)
+	}
+	if calls := conn.CallCount(); calls != 1 {
+		t.Fatalf("expected only first execution to reach connector, got %d calls", calls)
+	}
+
+	close(conn.release)
+	first := <-done
+	if first.err != nil {
+		t.Fatal(first.err)
+	}
+	again, err := uc.Execute(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ID != first.result.ID {
+		t.Fatalf("expected stored idempotent result %s, got %s", first.result.ID, again.ID)
+	}
+	if calls := conn.CallCount(); calls != 1 {
+		t.Fatalf("expected replay to skip connector, got %d calls", calls)
 	}
 }
 

@@ -221,6 +221,10 @@ func (h *Handler) execute(w http.ResponseWriter, r *http.Request) {
 			httpjson.WriteFlatError(w, http.StatusForbidden, "FORBIDDEN", "connector org is not allowed for this principal")
 			return
 		}
+		if IsConflict(err) {
+			httpjson.WriteFlatError(w, http.StatusConflict, "CONFLICT", "connector execution already in progress")
+			return
+		}
 		httpjson.WriteFlatInternalError(w, err, "execute connector failed")
 		return
 	}

@@ -8,7 +8,7 @@ API_KEY="${API_KEY:-nexus-admin-dev-key}"
 
 # Companion (puerto host por defecto alineado con docker-compose)
 COMPANION_BASE="${COMPANION_BASE:-http://localhost:18085}"
-COMPANION_API_KEY="${COMPANION_API_KEY:-nexus-companion-admin-dev-key}"
+COMPANION_API_KEY="${COMPANION_API_KEY:-companion-admin-dev-key}"
 
 # Esperar a que un endpoint HTTP responda 200
 wait_for_http() {

@@ -36,5 +36,5 @@ func IsForbidden(err error) bool {
 }
 
 func IsConflict(err error) bool {
-	return domainerr.IsConflict(err)
+	return errors.Is(err, ErrConflict) || domainerr.IsConflict(err)
 }
