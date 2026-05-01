@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/devpablocristo/core/http/go/httpjson"
 	"github.com/google/uuid"
@@ -23,7 +24,7 @@ type connectorUsecase interface {
 	DeleteConnector(ctx context.Context, id uuid.UUID) error
 	Execute(ctx context.Context, spec domain.ExecutionSpec) (domain.ExecutionResult, error)
 	ListExecutions(ctx context.Context, connectorID uuid.UUID, limit int) ([]domain.ExecutionResult, error)
-	Capabilities() []ConnectorCapabilities
+	Capabilities(filter domain.CapabilityFilter) []ConnectorCapabilities
 }
 
 // Handler HTTP adapter para conectores.
@@ -253,13 +254,27 @@ func (h *Handler) listExecutions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) capabilities(w http.ResponseWriter, r *http.Request) {
-	caps := h.uc.Capabilities()
+	filter := domain.CapabilityFilter{
+		TenantID:           principalOrgID(r),
+		Roles:              parseHeaderValues(r.Header.Get("X-Auth-Roles")),
+		Scopes:             parseHeaderValues(r.Header.Get("X-Auth-Scopes")),
+		Modules:            parseHeaderValues(r.Header.Get("X-Enabled-Modules")),
+		MaxRiskClass:       strings.TrimSpace(r.URL.Query().Get("max_risk_class")),
+		IncludeWrites:      strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_writes")), "true"),
+		EnforcePermissions: !requestHasNoAuthContext(r),
+	}
+	caps := h.uc.Capabilities(filter)
 	out := make([]dto.CapabilityResponse, 0, len(caps))
 	for _, c := range caps {
+		decisions := make([]domain.CapabilityDecision, 0, len(c.Capabilities))
+		for _, capability := range c.Capabilities {
+			decisions = append(decisions, capability.RuntimeDecision())
+		}
 		out = append(out, dto.CapabilityResponse{
-			ConnectorID:  c.ID,
-			Kind:         c.Kind,
-			Capabilities: c.Capabilities,
+			ConnectorID:      c.ID,
+			Kind:             c.Kind,
+			Capabilities:     c.Capabilities,
+			RuntimeDecisions: decisions,
 		})
 	}
 	httpjson.WriteJSON(w, http.StatusOK, dto.CapabilitiesListResponse{Connectors: out})

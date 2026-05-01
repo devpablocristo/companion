@@ -107,7 +107,7 @@ func (uc *Usecases) Execute(ctx context.Context, spec domain.ExecutionSpec) (dom
 			continue
 		}
 		operationKnown = true
-		capability = cap
+		capability = cap.Normalized(conn.ID(), conn.Kind())
 		break
 	}
 	if !operationKnown {
@@ -212,14 +212,25 @@ func (uc *Usecases) ListExecutions(ctx context.Context, connectorID uuid.UUID, l
 	return uc.repo.ListExecutions(ctx, connectorID, limit)
 }
 
-// Capabilities lista las capacidades de todos los conectores registrados.
-func (uc *Usecases) Capabilities() []ConnectorCapabilities {
+// Capabilities lista las capacidades publicadas de todos los conectores registrados.
+func (uc *Usecases) Capabilities(filter domain.CapabilityFilter) []ConnectorCapabilities {
 	var out []ConnectorCapabilities
 	for _, c := range uc.registry.List() {
+		caps := make([]domain.Capability, 0, len(c.Capabilities()))
+		for _, cap := range c.Capabilities() {
+			manifest := cap.Normalized(c.ID(), c.Kind())
+			if !manifest.MatchesFilter(filter) {
+				continue
+			}
+			caps = append(caps, manifest)
+		}
+		if len(caps) == 0 {
+			continue
+		}
 		out = append(out, ConnectorCapabilities{
 			ID:           c.ID(),
 			Kind:         c.Kind(),
-			Capabilities: c.Capabilities(),
+			Capabilities: caps,
 		})
 	}
 	return out
@@ -367,24 +378,27 @@ func executionLockKey(spec domain.ExecutionSpec) string {
 
 func buildExecutionEvidence(config domain.Connector, capability domain.Capability, spec domain.ExecutionSpec, result domain.ExecutionResult) json.RawMessage {
 	evidence := map[string]any{
-		"actor_id":          strings.TrimSpace(spec.ActorID),
-		"org_id":            strings.TrimSpace(spec.OrgID),
-		"connector_id":      spec.ConnectorID.String(),
-		"connector_kind":    config.Kind,
-		"operation":         spec.Operation,
-		"mode":              capability.Mode,
-		"side_effect":       capability.HasSideEffect(),
-		"risk_class":        capability.RiskClass,
-		"payload":           sanitizeJSONPayload(spec.Payload),
-		"result":            sanitizeJSONPayload(result.ResultJSON),
-		"external_ref":      result.ExternalRef,
-		"status":            result.Status,
-		"error_message":     result.ErrorMessage,
-		"duration_ms":       result.DurationMS,
-		"idempotency_key":   spec.IdempotencyKey,
-		"created_at":        result.CreatedAt.UTC().Format(time.RFC3339Nano),
-		"verification":      "unsigned",
-		"attestation_ready": true,
+		"actor_id":           strings.TrimSpace(spec.ActorID),
+		"org_id":             strings.TrimSpace(spec.OrgID),
+		"connector_id":       spec.ConnectorID.String(),
+		"connector_kind":     config.Kind,
+		"capability_id":      capability.ID,
+		"capability_version": capability.Version,
+		"operation":          spec.Operation,
+		"mode":               capability.Mode,
+		"side_effect_class":  capability.SideEffectClass,
+		"side_effect":        capability.HasSideEffect(),
+		"risk_class":         capability.RiskClass,
+		"payload":            sanitizeJSONPayload(spec.Payload),
+		"result":             sanitizeJSONPayload(result.ResultJSON),
+		"external_ref":       result.ExternalRef,
+		"status":             result.Status,
+		"error_message":      result.ErrorMessage,
+		"duration_ms":        result.DurationMS,
+		"idempotency_key":    spec.IdempotencyKey,
+		"created_at":         result.CreatedAt.UTC().Format(time.RFC3339Nano),
+		"verification":       "unsigned",
+		"attestation_ready":  true,
 	}
 	if spec.TaskID != nil {
 		evidence["task_id"] = spec.TaskID.String()

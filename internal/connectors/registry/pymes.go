@@ -34,6 +34,7 @@ func (p *PymesConnector) Capabilities() []domain.Capability {
 			SideEffect:     true,
 			RiskClass:      "medium",
 			RequiresReview: true,
+			RequiredScopes: []string{"companion:connectors:execute"},
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"org_id", "party_id", "body"},
@@ -46,6 +47,7 @@ func (p *PymesConnector) Capabilities() []domain.Capability {
 			SideEffect:     true,
 			RiskClass:      "medium",
 			RequiresReview: true,
+			RequiredScopes: []string{"companion:connectors:execute"},
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"org_id", "party_id", "template_name"},
@@ -53,10 +55,11 @@ func (p *PymesConnector) Capabilities() []domain.Capability {
 			EvidenceFields: []string{"sent", "external_ref", "party_id", "template_name"},
 		},
 		{
-			Operation: "pymes.get_work_orders",
-			Mode:      domain.CapabilityModeRead,
-			ReadOnly:  true,
-			RiskClass: "low",
+			Operation:      "pymes.get_work_orders",
+			Mode:           domain.CapabilityModeRead,
+			ReadOnly:       true,
+			RiskClass:      "low",
+			RequiredScopes: []string{"companion:connectors:execute"},
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"org_id"},
@@ -64,10 +67,11 @@ func (p *PymesConnector) Capabilities() []domain.Capability {
 			EvidenceFields: []string{"items"},
 		},
 		{
-			Operation: "pymes.get_appointments",
-			Mode:      domain.CapabilityModeRead,
-			ReadOnly:  true,
-			RiskClass: "low",
+			Operation:      "pymes.get_appointments",
+			Mode:           domain.CapabilityModeRead,
+			ReadOnly:       true,
+			RiskClass:      "low",
+			RequiredScopes: []string{"companion:connectors:execute"},
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"org_id"},
@@ -75,10 +79,11 @@ func (p *PymesConnector) Capabilities() []domain.Capability {
 			EvidenceFields: []string{"items"},
 		},
 		{
-			Operation: "pymes.get_low_stock",
-			Mode:      domain.CapabilityModeRead,
-			ReadOnly:  true,
-			RiskClass: "low",
+			Operation:      "pymes.get_low_stock",
+			Mode:           domain.CapabilityModeRead,
+			ReadOnly:       true,
+			RiskClass:      "low",
+			RequiredScopes: []string{"companion:connectors:execute"},
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"org_id"},
@@ -86,10 +91,11 @@ func (p *PymesConnector) Capabilities() []domain.Capability {
 			EvidenceFields: []string{"items"},
 		},
 		{
-			Operation: "pymes.get_customers",
-			Mode:      domain.CapabilityModeRead,
-			ReadOnly:  true,
-			RiskClass: "low",
+			Operation:      "pymes.get_customers",
+			Mode:           domain.CapabilityModeRead,
+			ReadOnly:       true,
+			RiskClass:      "low",
+			RequiredScopes: []string{"companion:connectors:execute"},
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"org_id"},

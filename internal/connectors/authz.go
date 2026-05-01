@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/devpablocristo/core/http/go/httpjson"
 	domain "github.com/devpablocristo/companion/internal/connectors/usecases/domain"
+	"github.com/devpablocristo/core/http/go/httpjson"
 )
 
 const (
@@ -93,12 +93,21 @@ func requestHasScope(r *http.Request, scopes ...string) bool {
 }
 
 func parseHeaderScopes(raw string) map[string]struct{} {
+	values := parseHeaderValues(raw)
+	out := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		out[value] = struct{}{}
+	}
+	return out
+}
+
+func parseHeaderValues(raw string) []string {
 	raw = strings.NewReplacer(",", " ", ";", " ", "+", " ").Replace(raw)
 	fields := strings.Fields(raw)
-	out := make(map[string]struct{}, len(fields))
+	out := make([]string, 0, len(fields))
 	for _, field := range fields {
-		if scope := strings.TrimSpace(field); scope != "" {
-			out[scope] = struct{}{}
+		if value := strings.TrimSpace(field); value != "" {
+			out = append(out, value)
 		}
 	}
 	return out

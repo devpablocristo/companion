@@ -26,10 +26,11 @@ func (m *MockConnector) Kind() string { return "mock" }
 func (m *MockConnector) Capabilities() []domain.Capability {
 	return []domain.Capability{
 		{
-			Operation: "mock.echo",
-			Mode:      domain.CapabilityModeRead,
-			ReadOnly:  true,
-			RiskClass: "low",
+			Operation:      "mock.echo",
+			Mode:           domain.CapabilityModeRead,
+			ReadOnly:       true,
+			RiskClass:      "low",
+			RequiredScopes: []string{"companion:connectors:execute"},
 			InputSchema: map[string]any{
 				"type": "object",
 			},
@@ -41,6 +42,7 @@ func (m *MockConnector) Capabilities() []domain.Capability {
 			SideEffect:     true,
 			RiskClass:      "low",
 			RequiresReview: true,
+			RequiredScopes: []string{"companion:connectors:execute"},
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"message"},

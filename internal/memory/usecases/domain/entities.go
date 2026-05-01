@@ -17,6 +17,14 @@ const (
 	MemoryUserPreference MemoryKind = "user_preference"
 )
 
+type MemoryClass string
+
+const (
+	MemoryClassStable      MemoryClass = "stable"
+	MemoryClassOperational MemoryClass = "operational"
+	MemoryClassAudit       MemoryClass = "audit"
+)
+
 // ScopeType alcance de la entrada de memoria.
 type ScopeType string
 
@@ -54,5 +62,16 @@ func DefaultRetentionDays(kind MemoryKind) int {
 		return 0 // sin expiración
 	default:
 		return 90
+	}
+}
+
+func ClassForKind(kind MemoryKind) MemoryClass {
+	switch kind {
+	case MemoryUserPreference, MemoryPlaybook:
+		return MemoryClassStable
+	case MemoryTaskSummary, MemoryTaskFacts:
+		return MemoryClassOperational
+	default:
+		return MemoryClassOperational
 	}
 }

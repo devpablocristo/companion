@@ -279,7 +279,7 @@ func TestUsecases_CapabilitiesExposeConnectorContractV1(t *testing.T) {
 	reg.Register(registry.NewMockConnector())
 	uc := NewUsecases(&fakeConnectorRepo{}, reg, &stubChecker{})
 
-	caps := uc.Capabilities()
+	caps := uc.Capabilities(domain.CapabilityFilter{IncludeWrites: true})
 	if len(caps) != 1 {
 		t.Fatalf("expected one connector, got %d", len(caps))
 	}
@@ -302,8 +302,63 @@ func TestUsecases_CapabilitiesExposeConnectorContractV1(t *testing.T) {
 	if writeCap.RiskClass == "" {
 		t.Fatal("expected risk_class")
 	}
+	if writeCap.ID != "mock.write" || writeCap.Version == "" || writeCap.OwnerDomain != "mock" || writeCap.Product != "mock" {
+		t.Fatalf("expected normalized manifest identity fields: %+v", writeCap)
+	}
+	if writeCap.TenantScope.Mode == "" || writeCap.AuthMode.Type == "" || !writeCap.ApprovalPolicy.Required {
+		t.Fatalf("expected tenant/auth/approval defaults: %+v", writeCap)
+	}
+	if !writeCap.Idempotency.Required || len(writeCap.ErrorContract.TypedErrors) == 0 || !writeCap.Observability.EmitTrace {
+		t.Fatalf("expected idempotency, typed errors and observability: %+v", writeCap)
+	}
 	if len(writeCap.InputSchema) == 0 || len(writeCap.EvidenceFields) == 0 {
 		t.Fatalf("expected schema and evidence fields: %+v", writeCap)
+	}
+}
+
+func TestUsecases_CapabilitiesFiltersWritesByDefault(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.NewRegistry()
+	reg.Register(registry.NewMockConnector())
+	uc := NewUsecases(&fakeConnectorRepo{}, reg, &stubChecker{})
+
+	caps := uc.Capabilities(domain.CapabilityFilter{
+		Scopes: []string{"companion:connectors:execute"},
+	})
+	if len(caps) != 1 {
+		t.Fatalf("expected one connector, got %d", len(caps))
+	}
+	if len(caps[0].Capabilities) != 1 {
+		t.Fatalf("expected only read-only capability, got %+v", caps[0].Capabilities)
+	}
+	if caps[0].Capabilities[0].Operation != "mock.echo" {
+		t.Fatalf("expected mock.echo, got %s", caps[0].Capabilities[0].Operation)
+	}
+}
+
+func TestUsecases_CapabilitiesFiltersByPermissionsWhenAuthContextExists(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.NewRegistry()
+	reg.Register(registry.NewMockConnector())
+	uc := NewUsecases(&fakeConnectorRepo{}, reg, &stubChecker{})
+
+	caps := uc.Capabilities(domain.CapabilityFilter{
+		IncludeWrites:      true,
+		EnforcePermissions: true,
+	})
+	if len(caps) != 0 {
+		t.Fatalf("expected no capabilities without required scopes, got %+v", caps)
+	}
+
+	caps = uc.Capabilities(domain.CapabilityFilter{
+		Scopes:             []string{"companion:connectors:execute"},
+		IncludeWrites:      true,
+		EnforcePermissions: true,
+	})
+	if len(caps) != 1 || len(caps[0].Capabilities) != 2 {
+		t.Fatalf("expected scoped discovery to expose mock capabilities, got %+v", caps)
 	}
 }
 

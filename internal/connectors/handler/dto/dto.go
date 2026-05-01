@@ -59,9 +59,10 @@ type ExecutionListResponse struct {
 
 // CapabilityResponse capacidad de un conector.
 type CapabilityResponse struct {
-	ConnectorID  string              `json:"connector_id"`
-	Kind         string              `json:"kind"`
-	Capabilities []domain.Capability `json:"capabilities"`
+	ConnectorID      string                      `json:"connector_id"`
+	Kind             string                      `json:"kind"`
+	Capabilities     []domain.Capability         `json:"capabilities"`
+	RuntimeDecisions []domain.CapabilityDecision `json:"runtime_decisions"`
 }
 
 // CapabilitiesListResponse lista de capacidades.

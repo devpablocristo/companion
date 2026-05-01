@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
+
+	"github.com/google/uuid"
 
 	taskdomain "github.com/devpablocristo/companion/internal/tasks/usecases/domain"
 )
@@ -29,24 +32,50 @@ func NewOrchestrator(provider LLMProvider, toolkit *ToolKit, ports ContextPorts)
 
 // RunInput entrada para ejecutar el orquestador.
 type RunInput struct {
-	UserID   string
-	OrgID    string
-	Message  string
-	Messages []taskdomain.TaskMessage // hilo completo hasta ahora
+	UserID         string
+	OrgID          string
+	ProductSurface string
+	Message        string
+	Messages       []taskdomain.TaskMessage // hilo completo hasta ahora
 }
 
 // RunResult resultado del orquestador.
 type RunResult struct {
 	Reply string
+	Trace RunTrace
 }
 
 // Run ejecuta el loop principal: context → LLM → tools → LLM → respuesta.
 func (o *Orchestrator) Run(ctx context.Context, in RunInput) (RunResult, error) {
+	productSurface := in.ProductSurface
+	if productSurface == "" {
+		productSurface = DefaultProductSurface
+	}
+	route := RouteAgent(in.Message, productSurface, o.toolkit)
+	trace := RunTrace{
+		RunID:          uuid.NewString(),
+		IdentityChain:  BuildIdentityChain(in.UserID, in.OrgID, productSurface),
+		Intent:         route.Intent,
+		ProductSurface: route.Product,
+		AutonomyLevel:  route.Autonomy,
+		StartedAt:      time.Now().UTC(),
+	}
+	if event := CheckPromptInjection(in.Message); event != nil {
+		trace.GuardrailEvents = append(trace.GuardrailEvents, *event)
+		trace.CompletedAt = time.Now().UTC()
+		slog.Warn("runtime_guardrail_rejected", "run_id", trace.RunID, "type", event.Type, "reason", event.Reason)
+		return RunResult{
+			Reply: "No puedo continuar con instrucciones que intentan modificar mis reglas internas. Si necesitás hacer una acción concreta, reformulá el pedido con el objetivo de negocio.",
+			Trace: trace,
+		}, nil
+	}
+
 	// 1. Ensamblar contexto
 	assembled := AssembleContext(ctx, o.ports, in.UserID, in.OrgID, in.Messages)
 
 	// 2. Construir mensajes para el LLM
 	systemPrompt := SystemPrompt()
+	systemPrompt += "\n\nRuntime control plane:\n" + runtimeSummary(trace.IdentityChain, route)
 	if assembled.Summary != "" {
 		systemPrompt += "\n\nContexto actual:\n" + assembled.Summary
 	}
@@ -66,7 +95,10 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput) (RunResult, error) 
 		if err != nil {
 			slog.Error("llm_chat_failed", "round", round, "error", err)
 			// Fallback determinista: intentar con echo provider
-			return o.fallback(ctx, in)
+			result, fallbackErr := o.fallback(ctx, in)
+			trace.CompletedAt = time.Now().UTC()
+			result.Trace = trace
+			return result, fallbackErr
 		}
 
 		// Si no hay tool calls, tenemos la respuesta final
@@ -75,7 +107,8 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput) (RunResult, error) 
 			if reply == "" {
 				reply = "No pude generar una respuesta en este momento."
 			}
-			return RunResult{Reply: reply}, nil
+			trace.CompletedAt = time.Now().UTC()
+			return RunResult{Reply: reply, Trace: trace}, nil
 		}
 
 		// Hay tool calls: ejecutar y agregar resultados
@@ -89,8 +122,16 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput) (RunResult, error) 
 		// Ejecutar cada tool y agregar resultado
 		for _, tc := range resp.ToolCalls {
 			slog.Info("tool_call", "tool", tc.Name, "round", round)
+			toolStart := time.Now()
 			if err := ValidateToolCallSafety(tc.Name, tc.Args); err != nil {
 				slog.Warn("tool_call_rejected", "tool", tc.Name, "error", err)
+				trace.ToolCalls = append(trace.ToolCalls, ToolTrace{
+					Name:           tc.Name,
+					ToolCallID:     tc.ID,
+					Allowed:        false,
+					DecisionReason: err.Error(),
+					DurationMS:     time.Since(toolStart).Milliseconds(),
+				})
 				llmMessages = append(llmMessages, LLMMessage{
 					Role:       "tool",
 					Content:    fmt.Sprintf(`{"error":"tool call rejected: %s"}`, err.Error()),
@@ -98,10 +139,35 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput) (RunResult, error) 
 				})
 				continue
 			}
+			if event := ValidateToolPolicy(tc.Name, tc.Args, trace.AutonomyLevel); event != nil {
+				slog.Warn("tool_call_guardrail_rejected", "tool", tc.Name, "type", event.Type, "reason", event.Reason)
+				trace.GuardrailEvents = append(trace.GuardrailEvents, *event)
+				trace.ToolCalls = append(trace.ToolCalls, ToolTrace{
+					Name:           tc.Name,
+					ToolCallID:     tc.ID,
+					Allowed:        false,
+					DecisionReason: event.Reason,
+					DurationMS:     time.Since(toolStart).Milliseconds(),
+				})
+				llmMessages = append(llmMessages, LLMMessage{
+					Role:       "tool",
+					Content:    fmt.Sprintf(`{"error":"tool call rejected: %s"}`, event.Reason),
+					ToolCallID: tc.ID,
+				})
+				continue
+			}
 
 			// Inyectar identidad en context para que remember/recall usen IDs reales
-			toolCtx := WithIdentity(ctx, in.UserID, in.OrgID)
+			toolCtx, cancel := context.WithTimeout(WithIdentity(ctx, in.UserID, in.OrgID), 15*time.Second)
 			result := o.toolkit.ExecuteTool(toolCtx, tc.Name, tc.Args)
+			cancel()
+			trace.ToolCalls = append(trace.ToolCalls, ToolTrace{
+				Name:           tc.Name,
+				ToolCallID:     tc.ID,
+				Allowed:        true,
+				DecisionReason: "allowed_by_runtime_policy",
+				DurationMS:     time.Since(toolStart).Milliseconds(),
+			})
 
 			llmMessages = append(llmMessages, LLMMessage{
 				Role:       "tool",
@@ -113,11 +179,14 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput) (RunResult, error) 
 
 	// Si llegamos acá, agotamos las rondas
 	slog.Warn("orchestrator_max_rounds_reached", "rounds", maxToolRounds)
-	return o.fallback(ctx, in)
+	result, err := o.fallback(ctx, in)
+	result.Trace = trace
+	result.Trace.CompletedAt = time.Now().UTC()
+	return result, err
 }
 
 // fallback genera una respuesta determinista sin LLM.
-// GPT señaló este punto: sin LLM, Nexus pierde riqueza pero no desaparece.
+// Sin LLM, Companion pierde riqueza pero no desaparece.
 func (o *Orchestrator) fallback(ctx context.Context, in RunInput) (RunResult, error) {
 	assembled := AssembleContext(ctx, o.ports, in.UserID, in.OrgID, in.Messages)
 
