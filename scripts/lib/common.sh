@@ -3,12 +3,23 @@
 
 set -euo pipefail
 
+# Cargar .env del repo para alinear smoke con `docker compose` (mismas claves que el contenedor).
+_companion_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+if [ -f "$_companion_root/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$_companion_root/.env"
+  set +a
+fi
+unset _companion_root
+
 API_BASE="${API_BASE:-http://localhost:18084}"
-API_KEY="${API_KEY:-nexus-admin-dev-key}"
+# Llamadas desde el host al API de Governance; debe ser la misma clave que GOVERNANCE_API_KEY.
+API_KEY="${GOVERNANCE_API_KEY:-${API_KEY:-governance-admin-dev-key}}"
 
 # Companion (puerto host por defecto alineado con docker-compose)
 COMPANION_BASE="${COMPANION_BASE:-http://localhost:18085}"
-COMPANION_API_KEY="${COMPANION_API_KEY:-companion-admin-dev-key}"
+COMPANION_API_KEY="${COMPANION_ADMIN_API_KEY:-${COMPANION_API_KEY:-companion-admin-dev-key}}"
 
 # Esperar a que un endpoint HTTP responda 200
 wait_for_http() {
@@ -28,12 +39,30 @@ wait_for_http() {
 
 # GET con API key
 api_get() {
-  curl -sf -H "X-API-Key: $API_KEY" "$API_BASE$1"
+  local url="$API_BASE$1"
+  local out code
+  out=$(curl -sS -w "\n%{http_code}" -H "X-API-Key: $API_KEY" "$url") || return $?
+  code=$(echo "$out" | tail -n1)
+  out=$(echo "$out" | sed '$d')
+  if ! [[ "$code" =~ ^[0-9]{3}$ ]] || [ "$code" -ge 400 ]; then
+    echo "governance GET $1 failed: HTTP ${code:-?} $out" >&2
+    return 22
+  fi
+  printf '%s' "$out"
 }
 
 # POST con API key y body JSON
 api_post() {
-  curl -sf -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d "$2" "$API_BASE$1"
+  local url="$API_BASE$1"
+  local out code
+  out=$(curl -sS -w "\n%{http_code}" -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d "$2" "$url") || return $?
+  code=$(echo "$out" | tail -n1)
+  out=$(echo "$out" | sed '$d')
+  if ! [[ "$code" =~ ^[0-9]{3}$ ]] || [ "$code" -ge 400 ]; then
+    echo "governance POST $1 failed: HTTP ${code:-?} $out" >&2
+    return 22
+  fi
+  printf '%s' "$out"
 }
 
 # DELETE con API key
@@ -77,17 +106,44 @@ yellow() { echo -e "\033[33m$1\033[0m"; }
 
 # GET Companion
 companion_get() {
-  curl -sf -H "X-API-Key: $COMPANION_API_KEY" "$COMPANION_BASE$1"
+  local url="$COMPANION_BASE$1"
+  local out code
+  out=$(curl -sS -w "\n%{http_code}" -H "X-API-Key: $COMPANION_API_KEY" "$url") || return $?
+  code=$(echo "$out" | tail -n1)
+  out=$(echo "$out" | sed '$d')
+  if ! [[ "$code" =~ ^[0-9]{3}$ ]] || [ "$code" -ge 400 ]; then
+    echo "companion GET $1 failed: HTTP ${code:-?} $out" >&2
+    return 22
+  fi
+  printf '%s' "$out"
 }
 
 # POST Companion JSON
 companion_post() {
-  curl -sf -X POST -H "X-API-Key: $COMPANION_API_KEY" -H "Content-Type: application/json" -d "$2" "$COMPANION_BASE$1"
+  local url="$COMPANION_BASE$1"
+  local out code
+  out=$(curl -sS -w "\n%{http_code}" -X POST -H "X-API-Key: $COMPANION_API_KEY" -H "Content-Type: application/json" -d "$2" "$url") || return $?
+  code=$(echo "$out" | tail -n1)
+  out=$(echo "$out" | sed '$d')
+  if ! [[ "$code" =~ ^[0-9]{3}$ ]] || [ "$code" -ge 400 ]; then
+    echo "companion POST $1 failed: HTTP ${code:-?} $out" >&2
+    return 22
+  fi
+  printf '%s' "$out"
 }
 
 # PUT Companion JSON
 companion_put() {
-  curl -sf -X PUT -H "X-API-Key: $COMPANION_API_KEY" -H "Content-Type: application/json" -d "$2" "$COMPANION_BASE$1"
+  local url="$COMPANION_BASE$1"
+  local out code
+  out=$(curl -sS -w "\n%{http_code}" -X PUT -H "X-API-Key: $COMPANION_API_KEY" -H "Content-Type: application/json" -d "$2" "$url") || return $?
+  code=$(echo "$out" | tail -n1)
+  out=$(echo "$out" | sed '$d')
+  if ! [[ "$code" =~ ^[0-9]{3}$ ]] || [ "$code" -ge 400 ]; then
+    echo "companion PUT $1 failed: HTTP ${code:-?} $out" >&2
+    return 22
+  fi
+  printf '%s' "$out"
 }
 
 pass() { green "PASS: $1"; }
