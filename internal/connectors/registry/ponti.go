@@ -4,125 +4,57 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+
+	ai "github.com/devpablocristo/core/ai/go"
 
 	domain "github.com/devpablocristo/companion/internal/connectors/usecases/domain"
 )
 
 // PontiConnector adapter de Companion a Ponti (read-only piloto).
 //
-// Las capabilities aquí espejan los manifests publicados por Ponti
-// (ponti-backend/internal/capabilities). En fase 2 el descubrimiento será
-// dinámico vía GET /api/v1/capabilities — por ahora se hardcodean para
-// evitar discovery por request y mantener determinismo en eval/CI.
+// La fuente de verdad del catálogo de capabilities es el manifest canónico
+// publicado por Ponti (`ai.CapabilityManifest`). Acá se mantiene una copia
+// hardcodeada del manifest mientras el discovery HTTP por request queda como
+// fase 2 (decisión D.2 del plan). El test del paquete corre
+// `ai.ValidateCapabilityManifest` para evitar drift.
 type PontiConnector struct {
-	client *PontiClient
+	client   *PontiClient
+	manifest ai.CapabilityManifest
 }
 
 // NewPontiConnector crea el conector. Si client es nil el caller no debe
 // registrarlo en el Registry.
 func NewPontiConnector(client *PontiClient) *PontiConnector {
-	return &PontiConnector{client: client}
+	return &PontiConnector{client: client, manifest: pontiInsightsManifest()}
 }
 
 func (p *PontiConnector) ID() string   { return "ponti" }
 func (p *PontiConnector) Kind() string { return "ponti" }
 
+// Capabilities expande cada tool del manifest canónico en un
+// `domain.Capability` que el Registry y el runtime puedan consumir.
 func (p *PontiConnector) Capabilities() []domain.Capability {
-	std := []string{"companion:connectors:execute"}
-	mods := []string{"ponti", "insights"}
-	roles := []string{"ponti.insights.viewer"}
-	return []domain.Capability{
-		{
-			ID:               "ponti.insights.list",
-			Version:          "1.0.0",
-			Status:           "active",
-			OwnerDomain:      "ponti.insights",
-			PublishedFrom:    "product",
-			Product:          "ponti",
-			Operation:        "ponti.insights.list",
-			Mode:             domain.CapabilityModeRead,
-			SideEffectClass:  domain.SideEffectClassRead,
-			ReadOnly:         true,
-			RiskClass:        domain.RiskClassLow,
-			TenantScope:      domain.TenantScope{Mode: domain.TenantScopeSingleTenant, Resolver: domain.TenantScopeResolverUser},
-			AuthMode:         domain.AuthMode{Type: "delegated_user"},
-			RequiredRoles:    roles,
-			RequiredScopes:   std,
-			RequiredModules:  mods,
-			RequiresReview:   false,
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"limit":            map[string]any{"type": "integer", "minimum": 1, "maximum": 200},
-					"include_resolved": map[string]any{"type": "boolean"},
-				},
-			},
-			EvidenceFields: []string{"source_ref", "captured_at"},
-		},
-		{
-			ID:               "ponti.insights.summary",
-			Version:          "1.0.0",
-			Status:           "active",
-			OwnerDomain:      "ponti.insights",
-			PublishedFrom:    "product",
-			Product:          "ponti",
-			Operation:        "ponti.insights.summary",
-			Mode:             domain.CapabilityModeRead,
-			SideEffectClass:  domain.SideEffectClassRead,
-			ReadOnly:         true,
-			RiskClass:        domain.RiskClassLow,
-			TenantScope:      domain.TenantScope{Mode: domain.TenantScopeSingleTenant, Resolver: domain.TenantScopeResolverUser},
-			AuthMode:         domain.AuthMode{Type: "delegated_user"},
-			RequiredRoles:    roles,
-			RequiredScopes:   std,
-			RequiredModules:  mods,
-			RequiresReview:   false,
-			InputSchema:      map[string]any{"type": "object"},
-			EvidenceFields:   []string{"source_ref", "captured_at", "tenant_scope"},
-		},
-		{
-			ID:               "ponti.insights.explain",
-			Version:          "1.0.0",
-			Status:           "active",
-			OwnerDomain:      "ponti.insights",
-			PublishedFrom:    "product",
-			Product:          "ponti",
-			Operation:        "ponti.insights.explain",
-			Mode:             domain.CapabilityModeRead,
-			SideEffectClass:  domain.SideEffectClassRead,
-			ReadOnly:         true,
-			RiskClass:        domain.RiskClassLow,
-			TenantScope:      domain.TenantScope{Mode: domain.TenantScopeSingleTenant, Resolver: domain.TenantScopeResolverUser},
-			AuthMode:         domain.AuthMode{Type: "delegated_user"},
-			RequiredRoles:    roles,
-			RequiredScopes:   std,
-			RequiredModules:  mods,
-			RequiresReview:   false,
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"insight_id": map[string]any{"type": "string"},
-				},
-				"required": []string{"insight_id"},
-			},
-			EvidenceFields: []string{"source_ref", "captured_at", "first_seen", "event_type", "entity"},
-		},
+	out := make([]domain.Capability, 0, len(p.manifest.Tools))
+	for _, tool := range p.manifest.Tools {
+		out = append(out, capabilityFromTool(p.manifest, tool))
 	}
+	return out
 }
 
 func (p *PontiConnector) Validate(spec domain.ExecutionSpec) error {
 	if spec.Operation == "" {
 		return fmt.Errorf("operation is required")
 	}
-	switch spec.Operation {
-	case "ponti.insights.list", "ponti.insights.summary", "ponti.insights.explain":
-		return nil
-	default:
-		return fmt.Errorf("unknown ponti operation: %s", spec.Operation)
+	for _, tool := range p.manifest.Tools {
+		if tool.Name == spec.Operation {
+			return nil
+		}
 	}
+	return fmt.Errorf("unknown ponti operation: %s", spec.Operation)
 }
 
 func (p *PontiConnector) Execute(ctx context.Context, spec domain.ExecutionSpec) (domain.ExecutionResult, error) {
@@ -164,9 +96,6 @@ func (p *PontiConnector) Execute(ctx context.Context, spec domain.ExecutionSpec)
 		raw = json.RawMessage(`{}`)
 	}
 
-	// Evidence pack: source_refs, captured_at, actor — el manifest declara
-	// estos campos como evidence_required. Los empaquetamos acá para que el
-	// caller (orchestrator → run trace) tenga la cita lista.
 	evidence := map[string]any{
 		"source_ref":  fmt.Sprintf("ponti.%s", spec.Operation),
 		"captured_at": time.Now().UTC().Format(time.RFC3339),
@@ -194,4 +123,162 @@ func (p *PontiConnector) Execute(ctx context.Context, spec domain.ExecutionSpec)
 		ReviewRequestID: spec.ReviewRequestID,
 		CreatedAt:       time.Now().UTC(),
 	}, nil
+}
+
+// capabilityFromTool traduce un ai.CapabilityTool al modelo
+// domain.Capability del Registry. La granularidad de Companion es por tool,
+// la del manifest canónico es por paquete — esta función es el puente.
+func capabilityFromTool(m ai.CapabilityManifest, tool ai.CapabilityTool) domain.Capability {
+	requiresReview := false
+	if tool.Governance != nil {
+		requiresReview = tool.Governance.RequiresReview
+	}
+	mode := domain.CapabilityModeRead
+	sideEffectClass := domain.SideEffectClassRead
+	readOnly := !tool.SideEffect && !strings.EqualFold(tool.Mode, ai.CapabilityModeWrite)
+	if !readOnly {
+		mode = domain.CapabilityModeWrite
+		sideEffectClass = domain.SideEffectClassWrite
+	}
+	return domain.Capability{
+		ID:              tool.Name,
+		Version:         m.Version,
+		Status:          domain.CapabilityStatusActive,
+		OwnerDomain:     m.ID,
+		PublishedFrom:   domain.CapabilityPublishedFromProduct,
+		Product:         m.Product,
+		Operation:       tool.Name,
+		Mode:            mode,
+		SideEffectClass: sideEffectClass,
+		SideEffect:      tool.SideEffect,
+		ReadOnly:        readOnly,
+		RiskClass:       tool.RiskClass,
+		TenantScope: domain.TenantScope{
+			Mode:     domain.TenantScopeSingleTenant,
+			Resolver: domain.TenantScopeResolverUser,
+		},
+		AuthMode:        domain.AuthMode{Type: "delegated_user"},
+		RequiredRoles:   append([]string(nil), tool.RequiredRoles...),
+		RequiredScopes:  []string{"companion:connectors:execute"},
+		RequiredModules: append([]string(nil), tool.RequiredModules...),
+		RequiresReview:  requiresReview,
+		InputSchema:     tool.InputSchema,
+		OutputSchema:    tool.OutputSchema,
+		EvidenceFields:  append([]string(nil), tool.EvidenceFields...),
+	}
+}
+
+// pontiInsightsManifest es la copia local del manifest canónico publicado
+// por Ponti. El test del paquete valida que pasa ai.ValidateCapabilityManifest
+// y que coincide en IDs/fields con la copia de Ponti.
+//
+// Cuando se implemente discovery dinámico (fase 2), esta función desaparece
+// y el manifest llega vía GET /api/v1/capabilities a Ponti.
+func pontiInsightsManifest() ai.CapabilityManifest {
+	roles := []string{"ponti.insights.viewer"}
+	modules := []string{"ponti", "insights"}
+
+	return ai.CapabilityManifest{
+		SchemaVersion: ai.CapabilityManifestSchemaVersion,
+		ID:            "ponti.insights",
+		Product:       "ponti",
+		Version:       "1.0.0",
+		TenantScope:   ai.CapabilityTenantScopeOrg,
+		Name:          "Ponti Insights",
+		Description:   "Read-only access to agricultural insights computed for the caller's tenant.",
+		Agents: []ai.CapabilityAgentDescriptor{
+			{
+				Name:        "ponti_insights",
+				Description: "Answers questions about active insights for the caller's tenant.",
+			},
+		},
+		Tools: []ai.CapabilityTool{
+			{
+				Name:        "ponti.insights.list",
+				Description: "Lists insights for the caller's tenant with optional filters.",
+				Mode:        ai.CapabilityModeRead,
+				SideEffect:  false,
+				RiskClass:   ai.CapabilityRiskLow,
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"limit":            map[string]any{"type": "integer", "minimum": 1, "maximum": 200},
+						"include_resolved": map[string]any{"type": "boolean"},
+					},
+				},
+				OutputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"items": map[string]any{"type": "array"},
+					},
+					"required": []string{"items"},
+				},
+				EvidenceFields: []string{"source_ref", "captured_at"},
+				CapabilityAuthz: ai.CapabilityAuthz{
+					RequiredRoles:   roles,
+					RequiredModules: modules,
+				},
+				CapabilityExecutor: ai.CapabilityExecutor{
+					ExecutorRef: "ponti-backend.insights.list",
+				},
+			},
+			{
+				Name:        "ponti.insights.summary",
+				Description: "Returns aggregate counts of insights by status and category for the tenant.",
+				Mode:        ai.CapabilityModeRead,
+				SideEffect:  false,
+				RiskClass:   ai.CapabilityRiskLow,
+				InputSchema: map[string]any{
+					"type":       "object",
+					"properties": map[string]any{},
+				},
+				OutputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"summary":  map[string]any{"type": "object"},
+						"evidence": map[string]any{"type": "object"},
+					},
+					"required": []string{"summary", "evidence"},
+				},
+				EvidenceFields: []string{"source_ref", "captured_at", "tenant_scope"},
+				CapabilityAuthz: ai.CapabilityAuthz{
+					RequiredRoles:   roles,
+					RequiredModules: modules,
+				},
+				CapabilityExecutor: ai.CapabilityExecutor{
+					ExecutorRef: "ponti-backend.insights.summary",
+				},
+			},
+			{
+				Name:        "ponti.insights.explain",
+				Description: "Returns an insight together with its provenance and evidence.",
+				Mode:        ai.CapabilityModeRead,
+				SideEffect:  false,
+				RiskClass:   ai.CapabilityRiskLow,
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"insight_id": map[string]any{"type": "string", "format": "uuid"},
+					},
+					"required": []string{"insight_id"},
+				},
+				OutputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"insight":  map[string]any{"type": "object"},
+						"evidence": map[string]any{"type": "object"},
+					},
+					"required": []string{"insight", "evidence"},
+				},
+				EvidenceFields: []string{"source_ref", "captured_at", "first_seen", "event_type", "entity"},
+				CapabilityAuthz: ai.CapabilityAuthz{
+					RequiredRoles:   roles,
+					RequiredModules: modules,
+				},
+				CapabilityExecutor: ai.CapabilityExecutor{
+					ExecutorRef: "ponti-backend.insights.explain",
+				},
+			},
+		},
+	}
 }

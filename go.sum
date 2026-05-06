@@ -19,6 +19,8 @@ github.com/devpablocristo/core/ai/go v0.0.0-20260328151810-084828e80b26 h1:pLs/3
 github.com/devpablocristo/core/ai/go v0.0.0-20260328151810-084828e80b26/go.mod h1:yixhr0luK+6a7vSJs0fKxBFInKxnz1yGc6w41JHXtpI=
 github.com/devpablocristo/core/ai/go v0.1.0 h1:8YXT8i715zogSYPspIj/DeKPiprMjkjdAvBhWpBAaVo=
 github.com/devpablocristo/core/ai/go v0.1.0/go.mod h1:yixhr0luK+6a7vSJs0fKxBFInKxnz1yGc6w41JHXtpI=
+github.com/devpablocristo/core/ai/go v0.2.0 h1:RYC+1FdUy7BuYQoQMnYKe3+WTNdiy8Gxgy9mjddc09s=
+github.com/devpablocristo/core/ai/go v0.2.0/go.mod h1:yixhr0luK+6a7vSJs0fKxBFInKxnz1yGc6w41JHXtpI=
 github.com/devpablocristo/core/authn/go v0.2.1 h1:UdiRYK85ZO9VmnFTfcAaFSYx6yS9ZZEZYm0kn+4AKLY=
 github.com/devpablocristo/core/authn/go v0.2.1/go.mod h1:L2SDT71ygu2MF5r/ZbleEaFwglPqJdtSR9G57TP2JcQ=
 github.com/devpablocristo/core/concurrency/go v0.0.0-20260328151810-084828e80b26 h1:xy/5qB71DkytGvYgc+DaAK5G9yJL6wgfiFHj5oTC/g8=

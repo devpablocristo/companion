@@ -10,6 +10,8 @@ import (
 
 	"github.com/google/uuid"
 
+	ai "github.com/devpablocristo/core/ai/go"
+
 	domain "github.com/devpablocristo/companion/internal/connectors/usecases/domain"
 )
 
@@ -316,6 +318,25 @@ func TestPontiConnector_RejectsInvalidToken(t *testing.T) {
 	}
 	if !strings.Contains(res.ErrorMessage, "401") {
 		t.Errorf("expected 401 in error, got %q", res.ErrorMessage)
+	}
+}
+
+// TestPontiConnector_Manifest_PassesCanonicalValidation garantiza que la
+// copia local del manifest de Ponti respeta el contrato canónico
+// (ai.CapabilityManifest). Si Ponti cambia su manifest publicado y este
+// adapter no se actualiza, este test falla — protege contra drift hasta que
+// haya discovery dinámico (fase 2).
+func TestPontiConnector_Manifest_PassesCanonicalValidation(t *testing.T) {
+	t.Parallel()
+	m := pontiInsightsManifest()
+	if err := ai.ValidateCapabilityManifest(m); err != nil {
+		t.Fatalf("ponti manifest does not pass canonical validation: %v", err)
+	}
+	if m.ID != "ponti.insights" {
+		t.Errorf("manifest id must be ponti.insights, got %q", m.ID)
+	}
+	if len(m.Tools) != 3 {
+		t.Errorf("expected 3 tools in fase 1, got %d", len(m.Tools))
 	}
 }
 
