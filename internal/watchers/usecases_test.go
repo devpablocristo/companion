@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/devpablocristo/core/governance/go/reviewclient"
+	"github.com/devpablocristo/core/governance/go/governanceclient"
 	"github.com/google/uuid"
 
 	domain "github.com/devpablocristo/companion/internal/watchers/usecases/domain"
@@ -153,22 +153,22 @@ func (f *fakePymes) SendWhatsAppText(_ context.Context, _, _, _ string) error {
 	return f.sendErr
 }
 
-// --- review fake ---
+// --- governance fake ---
 
-type fakeReview struct {
+type fakeGovernance struct {
 	decision string
 }
 
-func (f *fakeReview) SubmitRequest(_ context.Context, _ string, _ reviewclient.SubmitRequestBody) (reviewclient.SubmitResponse, error) {
-	return reviewclient.SubmitResponse{
+func (f *fakeGovernance) SubmitRequest(_ context.Context, _ string, _ governanceclient.SubmitRequestBody) (governanceclient.SubmitResponse, error) {
+	return governanceclient.SubmitResponse{
 		RequestID: uuid.New().String(),
 		Decision:  f.decision,
 		Status:    f.decision,
 	}, nil
 }
 
-func (f *fakeReview) GetRequest(_ context.Context, _ string) (reviewclient.RequestSummary, int, error) {
-	return reviewclient.RequestSummary{Status: f.decision, Decision: f.decision}, 200, nil
+func (f *fakeGovernance) GetRequest(_ context.Context, _ string) (governanceclient.RequestSummary, int, error) {
+	return governanceclient.RequestSummary{Status: f.decision, Decision: f.decision}, 200, nil
 }
 
 // --- tests ---
@@ -176,7 +176,7 @@ func (f *fakeReview) GetRequest(_ context.Context, _ string) (reviewclient.Reque
 func TestUsecases_Create(t *testing.T) {
 	t.Parallel()
 	repo := newFakeRepo()
-	uc := NewUsecases(repo, &fakePymes{}, &fakeReview{decision: "allowed"})
+	uc := NewUsecases(repo, &fakePymes{}, &fakeGovernance{decision: "allowed"})
 
 	w, err := uc.Create(context.Background(), CreateWatcherInput{
 		OrgID:       "org-1",
@@ -199,7 +199,7 @@ func TestUsecases_Create(t *testing.T) {
 func TestUsecases_UpdatePartialFields(t *testing.T) {
 	t.Parallel()
 	repo := newFakeRepo()
-	uc := NewUsecases(repo, &fakePymes{}, &fakeReview{decision: "allowed"})
+	uc := NewUsecases(repo, &fakePymes{}, &fakeGovernance{decision: "allowed"})
 
 	w, _ := uc.Create(context.Background(), CreateWatcherInput{
 		OrgID: "org-1", Name: "Original", WatcherType: domain.WatcherLowStock,
@@ -226,7 +226,7 @@ func TestUsecases_UpdatePartialFields(t *testing.T) {
 func TestUsecases_RunWatcher_DisabledReturnsError(t *testing.T) {
 	t.Parallel()
 	repo := newFakeRepo()
-	uc := NewUsecases(repo, &fakePymes{}, &fakeReview{decision: "allowed"})
+	uc := NewUsecases(repo, &fakePymes{}, &fakeGovernance{decision: "allowed"})
 
 	w, _ := uc.Create(context.Background(), CreateWatcherInput{
 		OrgID: "org-1", Name: "Disabled", WatcherType: domain.WatcherLowStock,
@@ -247,9 +247,9 @@ func TestUsecases_RunWatcher_StaleWorkOrders_AutoExecutes(t *testing.T) {
 			{ID: "wo-2", Type: "work_order", Name: "Otra orden", PartyID: "party-2"},
 		},
 	}
-	review := &fakeReview{decision: "allowed"}
+	governance := &fakeGovernance{decision: "allowed"}
 	repo := newFakeRepo()
-	uc := NewUsecases(repo, pymes, review)
+	uc := NewUsecases(repo, pymes, governance)
 
 	w, _ := uc.Create(context.Background(), CreateWatcherInput{
 		OrgID: "org-1", Name: "Stale WO", WatcherType: domain.WatcherStaleWorkOrders,
@@ -284,9 +284,9 @@ func TestUsecases_RunWatcher_DeniedSkipsExecution(t *testing.T) {
 			{ID: "wo-1", Type: "work_order", Name: "Denied order", PartyID: "party-1"},
 		},
 	}
-	review := &fakeReview{decision: "denied"}
+	governance := &fakeGovernance{decision: "denied"}
 	repo := newFakeRepo()
-	uc := NewUsecases(repo, pymes, review)
+	uc := NewUsecases(repo, pymes, governance)
 
 	w, _ := uc.Create(context.Background(), CreateWatcherInput{
 		OrgID: "org-1", Name: "Denied WO", WatcherType: domain.WatcherStaleWorkOrders,
@@ -308,7 +308,7 @@ func TestUsecases_RunWatcher_DeniedSkipsExecution(t *testing.T) {
 func TestUsecases_Delete(t *testing.T) {
 	t.Parallel()
 	repo := newFakeRepo()
-	uc := NewUsecases(repo, &fakePymes{}, &fakeReview{})
+	uc := NewUsecases(repo, &fakePymes{}, &fakeGovernance{})
 
 	w, _ := uc.Create(context.Background(), CreateWatcherInput{
 		OrgID: "org-1", Name: "To Delete", WatcherType: domain.WatcherLowStock,

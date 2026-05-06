@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/devpablocristo/core/governance/go/reviewclient"
+	"github.com/devpablocristo/core/governance/go/governanceclient"
 
 	"github.com/devpablocristo/companion/internal/memory"
 	memdomain "github.com/devpablocristo/companion/internal/memory/usecases/domain"
@@ -25,7 +25,7 @@ type ToolKit struct {
 }
 
 // NewToolKit crea el kit de tools con las dependencias inyectadas.
-func NewToolKit(rc *reviewclient.Client, memUC *memory.Usecases, watcherUC *watchers.Usecases) *ToolKit {
+func NewToolKit(rc *governanceclient.Client, memUC *memory.Usecases, watcherUC *watchers.Usecases) *ToolKit {
 	tk := &ToolKit{
 		Handlers: make(map[string]ToolHandler),
 	}
@@ -84,14 +84,14 @@ func NewToolKit(rc *reviewclient.Client, memUC *memory.Usecases, watcherUC *watc
 		},
 	}, func(ctx context.Context, _ json.RawMessage) (string, error) {
 		if rc == nil {
-			return `{"approvals": [], "message": "review no configurado"}`, nil
+			return `{"approvals": [], "message": "governance no configurado"}`, nil
 		}
 		st, raw, err := rc.ListPendingApprovals(ctx)
 		if err != nil {
 			return "", fmt.Errorf("list approvals: %w", err)
 		}
 		if st != 200 {
-			return fmt.Sprintf(`{"error": "review respondió con status %d"}`, st), nil
+			return fmt.Sprintf(`{"error": "governance respondió con status %d"}`, st), nil
 		}
 		return string(raw), nil
 	})
@@ -258,7 +258,7 @@ func approvalToolsEnabled() bool {
 	return strings.EqualFold(os.Getenv("NEXUS_COMPANION_ENABLE_APPROVAL_TOOLS"), "true")
 }
 
-func registerApprovalTools(tk *ToolKit, rc *reviewclient.Client) {
+func registerApprovalTools(tk *ToolKit, rc *governanceclient.Client) {
 	// --- approve_action ---
 	tk.add(ToolSchema{
 		Name:        "approve_action",
@@ -280,7 +280,7 @@ func registerApprovalTools(tk *ToolKit, rc *reviewclient.Client) {
 			return "", fmt.Errorf("parse args: %w", err)
 		}
 		if rc == nil {
-			return `{"error": "review no configurado"}`, nil
+			return `{"error": "governance no configurado"}`, nil
 		}
 		body := map[string]string{"decided_by": "nexus-companion", "note": input.Note}
 		st, raw, err := rc.Approve(ctx, input.ApprovalID, body)
@@ -288,7 +288,7 @@ func registerApprovalTools(tk *ToolKit, rc *reviewclient.Client) {
 			return "", fmt.Errorf("approve: %w", err)
 		}
 		if st >= 400 {
-			return fmt.Sprintf(`{"error": "approve falló", "status": %d, "detail": %q}`, st, reviewclient.ParseErrorBody(raw)), nil
+			return fmt.Sprintf(`{"error": "approve falló", "status": %d, "detail": %q}`, st, governanceclient.ParseErrorBody(raw)), nil
 		}
 		return `{"result": "aprobado"}`, nil
 	})
@@ -314,7 +314,7 @@ func registerApprovalTools(tk *ToolKit, rc *reviewclient.Client) {
 			return "", fmt.Errorf("parse args: %w", err)
 		}
 		if rc == nil {
-			return `{"error": "review no configurado"}`, nil
+			return `{"error": "governance no configurado"}`, nil
 		}
 		body := map[string]string{"decided_by": "nexus-companion", "note": input.Note}
 		st, raw, err := rc.Reject(ctx, input.ApprovalID, body)
@@ -322,7 +322,7 @@ func registerApprovalTools(tk *ToolKit, rc *reviewclient.Client) {
 			return "", fmt.Errorf("reject: %w", err)
 		}
 		if st >= 400 {
-			return fmt.Sprintf(`{"error": "reject falló", "status": %d, "detail": %q}`, st, reviewclient.ParseErrorBody(raw)), nil
+			return fmt.Sprintf(`{"error": "reject falló", "status": %d, "detail": %q}`, st, governanceclient.ParseErrorBody(raw)), nil
 		}
 		return `{"result": "rechazado"}`, nil
 	})

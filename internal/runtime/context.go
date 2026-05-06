@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/devpablocristo/core/governance/go/reviewclient"
+	"github.com/devpablocristo/core/governance/go/governanceclient"
 
 	memdomain "github.com/devpablocristo/companion/internal/memory/usecases/domain"
 	taskdomain "github.com/devpablocristo/companion/internal/tasks/usecases/domain"
@@ -35,7 +35,7 @@ func IdentityFromContext(ctx context.Context) Identity {
 
 // ContextPorts interfaces que el context assembler necesita.
 type ContextPorts struct {
-	ReviewClient *reviewclient.Client
+	GovernanceClient *governanceclient.Client
 	MemoryFind   func(ctx context.Context, scopeType memdomain.ScopeType, scopeID string, kind memdomain.MemoryKind, limit int) ([]memdomain.MemoryEntry, error)
 }
 
@@ -80,8 +80,8 @@ func AssembleContext(ctx context.Context, ports ContextPorts, userID, orgID stri
 	}
 
 	// 2. Aprobaciones pendientes
-	if ports.ReviewClient != nil {
-		st, raw, err := ports.ReviewClient.ListPendingApprovals(ctx)
+	if ports.GovernanceClient != nil {
+		st, raw, err := ports.GovernanceClient.ListPendingApprovals(ctx)
 		if err == nil && st == 200 && len(raw) > 0 {
 			var approvals struct {
 				Data []struct {

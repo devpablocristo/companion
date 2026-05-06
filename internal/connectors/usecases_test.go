@@ -102,7 +102,7 @@ func (f *fakeConnectorRepo) ReleaseExecutionLock(ctx context.Context, lockKey st
 	return nil
 }
 
-func (f *fakeConnectorRepo) GetExecutionByIdempotency(ctx context.Context, taskID uuid.UUID, operation string, reviewRequestID *uuid.UUID, idempotencyKey string) (domain.ExecutionResult, error) {
+func (f *fakeConnectorRepo) GetExecutionByIdempotency(ctx context.Context, taskID uuid.UUID, operation string, governanceRequestID *uuid.UUID, idempotencyKey string) (domain.ExecutionResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, execution := range f.executions {
@@ -112,10 +112,10 @@ func (f *fakeConnectorRepo) GetExecutionByIdempotency(ctx context.Context, taskI
 		if execution.Operation != operation || execution.IdempotencyKey != idempotencyKey {
 			continue
 		}
-		if reviewRequestID == nil && execution.ReviewRequestID == nil {
+		if governanceRequestID == nil && execution.GovernanceRequestID == nil {
 			return execution, nil
 		}
-		if reviewRequestID != nil && execution.ReviewRequestID != nil && *reviewRequestID == *execution.ReviewRequestID {
+		if governanceRequestID != nil && execution.GovernanceRequestID != nil && *governanceRequestID == *execution.GovernanceRequestID {
 			return execution, nil
 		}
 	}
@@ -140,7 +140,7 @@ type stubChecker struct {
 	calls    int
 }
 
-func (s *stubChecker) AuthorizeExecution(ctx context.Context, reviewRequestID uuid.UUID, orgID string) (bool, error) {
+func (s *stubChecker) AuthorizeExecution(ctx context.Context, governanceRequestID uuid.UUID, orgID string) (bool, error) {
 	s.calls++
 	return s.approved, s.err
 }
@@ -163,7 +163,7 @@ func (b *blockingConnector) Capabilities() []domain.Capability {
 			Operation:      "blocking.write",
 			Mode:           domain.CapabilityModeWrite,
 			SideEffect:     true,
-			RequiresReview: true,
+			RequiresGovernance: true,
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"message"},
@@ -205,7 +205,7 @@ func (b *blockingConnector) Execute(ctx context.Context, spec domain.ExecutionSp
 		DurationMS:      1,
 		IdempotencyKey:  spec.IdempotencyKey,
 		TaskID:          spec.TaskID,
-		ReviewRequestID: spec.ReviewRequestID,
+		GovernanceRequestID: spec.GovernanceRequestID,
 		CreatedAt:       time.Now().UTC(),
 	}, nil
 }
@@ -229,13 +229,13 @@ func TestUsecases_Execute_resolvesConnectorByKind(t *testing.T) {
 	reg := registry.NewRegistry()
 	reg.Register(registry.NewMockConnector())
 	uc := NewUsecases(repo, reg, &stubChecker{approved: true})
-	reviewRequestID := uuid.New()
+	governanceRequestID := uuid.New()
 
 	result, err := uc.Execute(context.Background(), domain.ExecutionSpec{
 		ConnectorID:     connectorID,
 		Operation:       "mock.write",
 		Payload:         json.RawMessage(`{"message":"hello"}`),
-		ReviewRequestID: &reviewRequestID,
+		GovernanceRequestID: &governanceRequestID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -296,8 +296,8 @@ func TestUsecases_CapabilitiesExposeConnectorContractV1(t *testing.T) {
 	if writeCap.Mode != domain.CapabilityModeWrite {
 		t.Fatalf("expected write mode, got %q", writeCap.Mode)
 	}
-	if !writeCap.RequiresReview || !writeCap.SideEffect {
-		t.Fatalf("expected requires_review side-effect capability: %+v", writeCap)
+	if !writeCap.RequiresGovernance || !writeCap.SideEffect {
+		t.Fatalf("expected requires_governance side-effect capability: %+v", writeCap)
 	}
 	if writeCap.RiskClass == "" {
 		t.Fatal("expected risk_class")
@@ -362,7 +362,7 @@ func TestUsecases_CapabilitiesFiltersByPermissionsWhenAuthContextExists(t *testi
 	}
 }
 
-func TestUsecases_Execute_readOnlyDoesNotRequireReview(t *testing.T) {
+func TestUsecases_Execute_readOnlyDoesNotRequireGovernance(t *testing.T) {
 	t.Parallel()
 
 	repo := &fakeConnectorRepo{connectors: make(map[uuid.UUID]domain.Connector)}
@@ -387,11 +387,11 @@ func TestUsecases_Execute_readOnlyDoesNotRequireReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	if checker.calls != 0 {
-		t.Fatalf("expected read-only execution to skip review checker, got %d calls", checker.calls)
+		t.Fatalf("expected read-only execution to skip governance checker, got %d calls", checker.calls)
 	}
 }
 
-func TestUsecases_Execute_sideEffectWithoutReviewDenied(t *testing.T) {
+func TestUsecases_Execute_sideEffectWithoutGovernanceDenied(t *testing.T) {
 	t.Parallel()
 
 	repo := &fakeConnectorRepo{connectors: make(map[uuid.UUID]domain.Connector)}
@@ -430,13 +430,13 @@ func TestUsecases_Execute_validatesInputSchema(t *testing.T) {
 	reg := registry.NewRegistry()
 	reg.Register(registry.NewMockConnector())
 	uc := NewUsecases(repo, reg, &stubChecker{approved: true})
-	reviewRequestID := uuid.New()
+	governanceRequestID := uuid.New()
 
 	_, err := uc.Execute(context.Background(), domain.ExecutionSpec{
 		ConnectorID:     connectorID,
 		Operation:       "mock.write",
 		Payload:         json.RawMessage(`{}`),
-		ReviewRequestID: &reviewRequestID,
+		GovernanceRequestID: &governanceRequestID,
 	})
 	if !errors.Is(err, ErrInvalidPayload) {
 		t.Fatalf("expected ErrInvalidPayload, got %v", err)
@@ -458,7 +458,7 @@ func TestUsecases_Execute_persistsSanitizedEvidence(t *testing.T) {
 	reg := registry.NewRegistry()
 	reg.Register(registry.NewMockConnector())
 	uc := NewUsecases(repo, reg, &stubChecker{approved: true})
-	reviewRequestID := uuid.New()
+	governanceRequestID := uuid.New()
 	taskID := uuid.New()
 
 	result, err := uc.Execute(context.Background(), domain.ExecutionSpec{
@@ -469,7 +469,7 @@ func TestUsecases_Execute_persistsSanitizedEvidence(t *testing.T) {
 		Payload:         json.RawMessage(`{"message":"hello","api_key":"secret"}`),
 		IdempotencyKey:  "idem-1",
 		TaskID:          &taskID,
-		ReviewRequestID: &reviewRequestID,
+		GovernanceRequestID: &governanceRequestID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -503,7 +503,7 @@ func TestUsecases_Execute_reusesIdempotentExecution(t *testing.T) {
 	reg := registry.NewRegistry()
 	reg.Register(registry.NewMockConnector())
 	uc := NewUsecases(repo, reg, &stubChecker{approved: true})
-	reviewRequestID := uuid.New()
+	governanceRequestID := uuid.New()
 	taskID := uuid.New()
 	spec := domain.ExecutionSpec{
 		ConnectorID:     connectorID,
@@ -511,7 +511,7 @@ func TestUsecases_Execute_reusesIdempotentExecution(t *testing.T) {
 		Payload:         json.RawMessage(`{"message":"hello"}`),
 		IdempotencyKey:  "idem-1",
 		TaskID:          &taskID,
-		ReviewRequestID: &reviewRequestID,
+		GovernanceRequestID: &governanceRequestID,
 	}
 
 	first, err := uc.Execute(context.Background(), spec)
@@ -546,7 +546,7 @@ func TestUsecases_Execute_conflictsConcurrentIdempotentExecution(t *testing.T) {
 	reg := registry.NewRegistry()
 	reg.Register(conn)
 	uc := NewUsecases(repo, reg, &stubChecker{approved: true})
-	reviewRequestID := uuid.New()
+	governanceRequestID := uuid.New()
 	taskID := uuid.New()
 	spec := domain.ExecutionSpec{
 		ConnectorID:     connectorID,
@@ -554,7 +554,7 @@ func TestUsecases_Execute_conflictsConcurrentIdempotentExecution(t *testing.T) {
 		Payload:         json.RawMessage(`{"message":"hello"}`),
 		IdempotencyKey:  "idem-concurrent",
 		TaskID:          &taskID,
-		ReviewRequestID: &reviewRequestID,
+		GovernanceRequestID: &governanceRequestID,
 	}
 
 	type executionResult struct {
@@ -608,14 +608,14 @@ func TestUsecases_Execute_rejectsConnectorTenantMismatch(t *testing.T) {
 	reg := registry.NewRegistry()
 	reg.Register(registry.NewMockConnector())
 	uc := NewUsecases(repo, reg, &stubChecker{approved: true})
-	reviewRequestID := uuid.New()
+	governanceRequestID := uuid.New()
 
 	_, err := uc.Execute(context.Background(), domain.ExecutionSpec{
 		ConnectorID:     connectorID,
 		OrgID:           "org-b",
 		Operation:       "mock.write",
 		Payload:         json.RawMessage(`{"message":"hello"}`),
-		ReviewRequestID: &reviewRequestID,
+		GovernanceRequestID: &governanceRequestID,
 	})
 	if !IsForbidden(err) {
 		t.Fatalf("expected forbidden tenant mismatch, got %v", err)

@@ -9,7 +9,7 @@ import {
   fetchRequest,
   rejectApproval,
   retryCompanionTask,
-  syncCompanionTaskFromReview,
+  syncCompanionTaskFromGovernance,
 } from '../api'
 import { t, relativeTime } from '../i18n'
 import RiskBadge from '../components/RiskBadge'
@@ -20,19 +20,19 @@ type TaskRow = {
   title: string
   goal?: string
   status: string
-  review_status?: string
+  governance_status?: string
   updated_at: string
 }
 
 type TaskDetail = {
   task: TaskRow & {
     created_by?: string
-    review_last_checked_at?: string
-    review_sync_error?: string
+    governance_last_checked_at?: string
+    governance_sync_error?: string
   }
-  review_sync?: {
-    review_request_id: string
-    last_review_status?: string
+  governance_sync?: {
+    governance_request_id: string
+    last_governance_status?: string
     last_checked_at?: string
     next_check_at?: string
   }
@@ -49,7 +49,7 @@ type TaskDetail = {
       summary?: string
     }
   }
-  linked_review_requests?: Array<{
+  linked_governance_requests?: Array<{
     request?: {
       id?: string
       status?: string
@@ -79,7 +79,7 @@ type ApprovalItem = {
   }>
 }
 
-type ReviewRequest = {
+type GovernanceRequest = {
   id: string
   action_type?: string
   target_resource?: string
@@ -94,7 +94,7 @@ type ReviewRequest = {
 
 type EnrichedApproval = {
   approval: ApprovalItem
-  request: ReviewRequest | null
+  request: GovernanceRequest | null
 }
 
 type TaskMemoryProjection = {
@@ -127,7 +127,7 @@ function formatRelative(value?: string | null, lang = 'en') {
   return relativeTime(lang, value)
 }
 
-function linkedTaskId(request: ReviewRequest | null | undefined) {
+function linkedTaskId(request: GovernanceRequest | null | undefined) {
   const nexus = request?.params?.nexus as Record<string, unknown> | undefined
   const taskId = nexus?.task_id
   return typeof taskId === 'string' && taskId ? taskId : null
@@ -148,10 +148,10 @@ function taskSummary(task: TaskRow, memory?: TaskMemoryProjection) {
   return task.title
 }
 
-function taskReviewRequestId(detail?: TaskDetail) {
+function taskGovernanceRequestId(detail?: TaskDetail) {
   return (
-    detail?.review_sync?.review_request_id ||
-    detail?.linked_review_requests?.find((item) => item.request?.id)?.request?.id ||
+    detail?.governance_sync?.governance_request_id ||
+    detail?.linked_governance_requests?.find((item) => item.request?.id)?.request?.id ||
     null
   )
 }
@@ -258,7 +258,7 @@ function ApprovalDecisionCard({
   onDecision,
 }: {
   approval: ApprovalItem
-  request: ReviewRequest | null
+  request: GovernanceRequest | null
   taskDetail?: TaskDetail
   taskMemory?: TaskMemoryProjection
   lang: string
@@ -282,7 +282,7 @@ function ApprovalDecisionCard({
             title: request?.action_type || approval.request_id,
             goal: request?.target_resource,
             status: taskDetail?.task.status || 'waiting_for_approval',
-            review_status: request?.status,
+            governance_status: request?.status,
             updated_at: taskDetail?.task.updated_at || '',
           },
           taskMemory,
@@ -444,9 +444,9 @@ function TaskCard({
   onExecute: (taskId: string) => void
   onRetry: (taskId: string) => void
 }) {
-  const reviewRequestId = taskReviewRequestId(detail)
+  const governanceRequestId = taskGovernanceRequestId(detail)
   const nextStep = factsNextStep(memory)
-  const lastError = detail?.execution_state?.last_error || detail?.task.review_sync_error
+  const lastError = detail?.execution_state?.last_error || detail?.task.governance_sync_error
 
   return (
     <div className="rounded-2xl border border-gray-800 bg-gray-950/65 p-4">
@@ -454,7 +454,7 @@ function TaskCard({
         <p className="text-sm font-semibold text-white">{task.title}</p>
         <span className="text-gray-600">•</span>
         <StatusBadge status={task.status} />
-        {task.review_status && <StatusBadge status={task.review_status} />}
+        {task.governance_status && <StatusBadge status={task.governance_status} />}
       </div>
       <p className="mt-2 text-sm leading-6 text-gray-300">{taskSummary(task, memory)}</p>
       {nextStep && (
@@ -474,17 +474,17 @@ function TaskCard({
       )}
       <div className="mt-4 flex flex-wrap gap-2">
         <ActionButton label={t(lang, 'openTask')} onClick={() => onViewTask(task.id)} busy={busy} />
-        {reviewRequestId && (
+        {governanceRequestId && (
           <ActionButton
             label={t(lang, 'openReplay')}
-            onClick={() => onViewReplay(reviewRequestId)}
+            onClick={() => onViewReplay(governanceRequestId)}
             busy={busy}
             tone="info"
           />
         )}
         {canSyncTask(task) && (
           <ActionButton
-            label={t(lang, 'syncFromReview')}
+            label={t(lang, 'syncFromGovernance')}
             onClick={() => onSync(task.id)}
             busy={busy}
             tone="info"
@@ -509,7 +509,7 @@ function TaskCard({
       </div>
       <div className="mt-3 flex items-center justify-between text-xs text-gray-500">
         <span>{t(lang, 'updated')}: {formatDateTime(task.updated_at)}</span>
-        {detail?.review_sync?.next_check_at && <span>{formatRelative(detail.review_sync.next_check_at, lang)}</span>}
+        {detail?.governance_sync?.next_check_at && <span>{formatRelative(detail.governance_sync.next_check_at, lang)}</span>}
       </div>
     </div>
   )
@@ -547,7 +547,7 @@ export default function Home({
       const approvalItems = await Promise.all(
         pendingApprovals.map(async (approval) => {
           try {
-            const request = (await fetchRequest(approval.request_id)) as ReviewRequest
+            const request = (await fetchRequest(approval.request_id)) as GovernanceRequest
             return { approval, request }
           } catch {
             return { approval, request: null }
@@ -619,7 +619,7 @@ export default function Home({
     setBusyAction((current) => ({ ...current, [key]: true }))
     try {
       if (action === 'sync') {
-        await syncCompanionTaskFromReview(taskId)
+        await syncCompanionTaskFromGovernance(taskId)
       } else if (action === 'execute') {
         await executeCompanionTask(taskId)
       } else {
@@ -635,7 +635,7 @@ export default function Home({
     }
   }
 
-  const runApprovalDecision = async (approval: ApprovalItem, request: ReviewRequest | null, decision: ApprovalDecision, note: string) => {
+  const runApprovalDecision = async (approval: ApprovalItem, request: GovernanceRequest | null, decision: ApprovalDecision, note: string) => {
     const key = `${decision}:${approval.id}`
     const taskId = linkedTaskId(request)
     setBusyAction((current) => ({ ...current, [key]: true }))
@@ -647,9 +647,9 @@ export default function Home({
       }
       if (taskId) {
         try {
-          await syncCompanionTaskFromReview(taskId)
+          await syncCompanionTaskFromGovernance(taskId)
         } catch {
-          // fallback to normal refresh; Review may still be settling.
+          // fallback to normal refresh; Governance may still be settling.
         }
       }
       setMessage({ type: 'ok', text: t(lang, `homeAction_${decision}_done`) })
@@ -851,7 +851,7 @@ export default function Home({
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="text-sm font-semibold text-white">{task.title}</p>
                     <StatusBadge status={task.status} />
-                    {task.review_status && <StatusBadge status={task.review_status} />}
+                    {task.governance_status && <StatusBadge status={task.governance_status} />}
                   </div>
                   <p className="mt-2 text-sm text-gray-300">{taskSummary(task, memory)}</p>
                   <div className="mt-2 flex flex-wrap gap-4 text-xs text-gray-500">
@@ -870,10 +870,10 @@ export default function Home({
                 </div>
                 <div className="flex shrink-0 flex-wrap gap-2">
                   <ActionButton label={t(lang, 'openTask')} onClick={() => onViewTask(task.id)} />
-                  {taskReviewRequestId(detail) && (
+                  {taskGovernanceRequestId(detail) && (
                     <ActionButton
                       label={t(lang, 'openReplay')}
-                      onClick={() => onViewReplay(taskReviewRequestId(detail) as string)}
+                      onClick={() => onViewReplay(taskGovernanceRequestId(detail) as string)}
                       tone="info"
                     />
                   )}

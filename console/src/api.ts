@@ -161,7 +161,7 @@ export const investigateCompanionTask = (id: string, note = '') =>
     method: 'POST',
     body: JSON.stringify({ note }),
   })
-export const syncCompanionTaskFromReview = (id: string) =>
+export const syncCompanionTaskFromGovernance = (id: string) =>
   companionRequest(`/companion/v1/tasks/${id}/sync`, { method: 'POST' })
 export const saveCompanionTaskExecutionPlan = (id: string, data: Record<string, unknown>) =>
   companionRequest(`/companion/v1/tasks/${id}/execution-plan`, { method: 'PUT', body: JSON.stringify(data) })

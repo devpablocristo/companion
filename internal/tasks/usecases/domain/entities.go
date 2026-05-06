@@ -34,9 +34,9 @@ type Task struct {
 	Channel             string
 	Summary             string
 	ContextJSON         json.RawMessage
-	ReviewStatus        string
-	ReviewLastCheckedAt *time.Time
-	ReviewSyncError     string
+	GovernanceStatus        string
+	GovernanceLastCheckedAt *time.Time
+	GovernanceSyncError     string
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 	ClosedAt            *time.Time
@@ -53,13 +53,13 @@ type TaskMessage struct {
 	CreatedAt  time.Time
 }
 
-// TaskAction acción sobre una tarea (p. ej. propose → Review).
+// TaskAction acción sobre una tarea (p. ej. propose → Governance).
 type TaskAction struct {
 	ID              uuid.UUID
 	TaskID          uuid.UUID
 	ActionType      string
 	Payload         json.RawMessage
-	ReviewRequestID *uuid.UUID
+	GovernanceRequestID *uuid.UUID
 	ErrorMessage    string
 	CreatedAt       time.Time
 }
@@ -74,12 +74,12 @@ type TaskArtifact struct {
 	CreatedAt time.Time
 }
 
-// TaskReviewSyncState snapshot persistido del último estado conocido en Review.
-type TaskReviewSyncState struct {
+// TaskGovernanceSyncState snapshot persistido del último estado conocido en Governance.
+type TaskGovernanceSyncState struct {
 	TaskID               uuid.UUID
-	ReviewRequestID      uuid.UUID
-	LastReviewStatus     string
-	LastReviewHTTPStatus int
+	GovernanceRequestID      uuid.UUID
+	LastGovernanceStatus     string
+	LastGovernanceHTTPStatus int
 	LastCheckedAt        time.Time
 	LastError            string
 	ConsecutiveFailures  int

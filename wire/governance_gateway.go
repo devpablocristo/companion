@@ -10,14 +10,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/devpablocristo/core/governance/go/reviewclient"
+	"github.com/devpablocristo/core/governance/go/governanceclient"
 )
 
 // governanceGateway es el cliente HTTP de companion hacia el servicio Nexus Governance
-// (ex review). Conserva el cliente del paquete `core/governance/go/reviewclient`
+// (ex governance). Conserva el cliente del paquete `core/governance/go/governanceclient`
 // porque el contrato HTTP no cambió: solo se renombró el servicio.
 type governanceGateway struct {
-	client  *reviewclient.Client
+	client  *governanceclient.Client
 	baseURL string
 	apiKey  string
 	http    *http.Client
@@ -38,18 +38,18 @@ func (e governanceError) Error() string {
 
 func newGovernanceGateway(baseURL, apiKey string) *governanceGateway {
 	return &governanceGateway{
-		client:  reviewclient.NewClient(baseURL, apiKey),
+		client:  governanceclient.NewClient(baseURL, apiKey),
 		baseURL: strings.TrimRight(baseURL, "/"),
 		apiKey:  apiKey,
 		http:    &http.Client{Timeout: 15 * time.Second},
 	}
 }
 
-func (g *governanceGateway) SubmitRequest(ctx context.Context, idempotencyKey string, body reviewclient.SubmitRequestBody) (reviewclient.SubmitResponse, error) {
+func (g *governanceGateway) SubmitRequest(ctx context.Context, idempotencyKey string, body governanceclient.SubmitRequestBody) (governanceclient.SubmitResponse, error) {
 	return g.client.SubmitRequest(ctx, idempotencyKey, body)
 }
 
-func (g *governanceGateway) GetRequest(ctx context.Context, id string) (reviewclient.RequestSummary, int, error) {
+func (g *governanceGateway) GetRequest(ctx context.Context, id string) (governanceclient.RequestSummary, int, error) {
 	return g.client.GetRequest(ctx, id)
 }
 

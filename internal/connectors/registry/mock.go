@@ -41,7 +41,7 @@ func (m *MockConnector) Capabilities() []domain.Capability {
 			Mode:           domain.CapabilityModeWrite,
 			SideEffect:     true,
 			RiskClass:      "low",
-			RequiresReview: true,
+			RequiresGovernance: true,
 			RequiredScopes: []string{"companion:connectors:execute"},
 			InputSchema: map[string]any{
 				"type":     "object",
@@ -83,7 +83,7 @@ func (m *MockConnector) Execute(ctx context.Context, spec domain.ExecutionSpec) 
 		DurationMS:      1,
 		IdempotencyKey:  spec.IdempotencyKey,
 		TaskID:          spec.TaskID,
-		ReviewRequestID: spec.ReviewRequestID,
+		GovernanceRequestID: spec.GovernanceRequestID,
 		CreatedAt:       time.Now().UTC(),
 	}, nil
 }

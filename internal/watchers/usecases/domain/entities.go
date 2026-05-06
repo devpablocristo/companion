@@ -42,8 +42,8 @@ type Proposal struct {
 	TargetResource  string
 	Params          json.RawMessage
 	Reason          string
-	ReviewRequestID *uuid.UUID
-	ReviewDecision  *string
+	GovernanceRequestID *uuid.UUID
+	GovernanceDecision  *string
 	ExecutionStatus string
 	ExecutionResult json.RawMessage
 	CreatedAt       time.Time

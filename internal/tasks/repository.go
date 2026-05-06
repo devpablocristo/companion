@@ -27,10 +27,10 @@ type Repository interface {
 	ListTasks(ctx context.Context, orgID string, limit int) ([]domain.Task, error)
 	UpdateTask(ctx context.Context, t domain.Task) (domain.Task, error)
 	ListTasksByStatus(ctx context.Context, status string, limit int) ([]domain.Task, error)
-	ListTasksPendingReviewSync(ctx context.Context, now time.Time, limit int) ([]domain.Task, error)
-	LatestProposeReviewRequestID(ctx context.Context, taskID uuid.UUID) (uuid.UUID, error)
-	GetReviewSyncState(ctx context.Context, taskID uuid.UUID) (domain.TaskReviewSyncState, error)
-	UpsertReviewSyncState(ctx context.Context, s domain.TaskReviewSyncState) (domain.TaskReviewSyncState, error)
+	ListTasksPendingGovernanceSync(ctx context.Context, now time.Time, limit int) ([]domain.Task, error)
+	LatestProposeGovernanceRequestID(ctx context.Context, taskID uuid.UUID) (uuid.UUID, error)
+	GetGovernanceSyncState(ctx context.Context, taskID uuid.UUID) (domain.TaskGovernanceSyncState, error)
+	UpsertGovernanceSyncState(ctx context.Context, s domain.TaskGovernanceSyncState) (domain.TaskGovernanceSyncState, error)
 	GetExecutionPlan(ctx context.Context, taskID uuid.UUID) (domain.TaskExecutionPlan, error)
 	UpsertExecutionPlan(ctx context.Context, plan domain.TaskExecutionPlan) (domain.TaskExecutionPlan, error)
 	GetExecutionState(ctx context.Context, taskID uuid.UUID) (domain.TaskExecutionState, error)
@@ -40,7 +40,7 @@ type Repository interface {
 	ListMessagesByTaskID(ctx context.Context, taskID uuid.UUID) ([]domain.TaskMessage, error)
 
 	InsertAction(ctx context.Context, a domain.TaskAction) (domain.TaskAction, error)
-	UpdateActionReviewResult(ctx context.Context, actionID uuid.UUID, reviewRequestID *uuid.UUID, errMsg string) error
+	UpdateActionGovernanceResult(ctx context.Context, actionID uuid.UUID, governanceRequestID *uuid.UUID, errMsg string) error
 	ListActionsByTaskID(ctx context.Context, taskID uuid.UUID) ([]domain.TaskAction, error)
 
 	InsertArtifact(ctx context.Context, ar domain.TaskArtifact) (domain.TaskArtifact, error)
@@ -57,9 +57,9 @@ func NewPostgresRepository(db *sharedpostgres.DB) *PostgresRepository {
 
 const selectTask = `
 	SELECT t.id, t.org_id, t.title, t.goal, t.status, t.priority, t.created_by, t.assigned_to, t.channel, t.summary,
-	       t.context_json, rs.last_review_status, rs.last_checked_at, rs.last_error, t.created_at, t.updated_at, t.closed_at
+	       t.context_json, rs.last_governance_status, rs.last_checked_at, rs.last_error, t.created_at, t.updated_at, t.closed_at
 	FROM companion_tasks t
-	LEFT JOIN companion_task_review_sync_state rs ON rs.task_id = t.id`
+	LEFT JOIN companion_task_governance_sync_state rs ON rs.task_id = t.id`
 
 func (r *PostgresRepository) CreateTask(ctx context.Context, t domain.Task) (domain.Task, error) {
 	now := time.Now().UTC()
@@ -173,7 +173,7 @@ func (r *PostgresRepository) ListTasksByStatus(ctx context.Context, status strin
 	return out, rows.Err()
 }
 
-func (r *PostgresRepository) ListTasksPendingReviewSync(ctx context.Context, now time.Time, limit int) ([]domain.Task, error) {
+func (r *PostgresRepository) ListTasksPendingGovernanceSync(ctx context.Context, now time.Time, limit int) ([]domain.Task, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -184,7 +184,7 @@ func (r *PostgresRepository) ListTasksPendingReviewSync(ctx context.Context, now
 		LIMIT $3
 	`, domain.TaskStatusWaitingForApproval, now.UTC(), limit)
 	if err != nil {
-		return nil, fmt.Errorf("list tasks pending review sync: %w", err)
+		return nil, fmt.Errorf("list tasks pending governance sync: %w", err)
 	}
 	defer rows.Close()
 	var out []domain.Task
@@ -198,11 +198,11 @@ func (r *PostgresRepository) ListTasksPendingReviewSync(ctx context.Context, now
 	return out, rows.Err()
 }
 
-func (r *PostgresRepository) LatestProposeReviewRequestID(ctx context.Context, taskID uuid.UUID) (uuid.UUID, error) {
+func (r *PostgresRepository) LatestProposeGovernanceRequestID(ctx context.Context, taskID uuid.UUID) (uuid.UUID, error) {
 	var rid uuid.UUID
 	err := r.db.Pool().QueryRow(ctx, `
-		SELECT review_request_id FROM companion_task_actions
-		WHERE task_id = $1 AND action_type = $2 AND review_request_id IS NOT NULL
+		SELECT governance_request_id FROM companion_task_actions
+		WHERE task_id = $1 AND action_type = $2 AND governance_request_id IS NOT NULL
 		ORDER BY created_at DESC
 		LIMIT 1
 	`, taskID, TaskActionPropose).Scan(&rid)
@@ -210,52 +210,52 @@ func (r *PostgresRepository) LatestProposeReviewRequestID(ctx context.Context, t
 		if errors.Is(err, pgx.ErrNoRows) {
 			return uuid.Nil, ErrNotFound
 		}
-		return uuid.Nil, fmt.Errorf("latest propose review id: %w", err)
+		return uuid.Nil, fmt.Errorf("latest propose governance id: %w", err)
 	}
 	return rid, nil
 }
 
-func (r *PostgresRepository) GetReviewSyncState(ctx context.Context, taskID uuid.UUID) (domain.TaskReviewSyncState, error) {
+func (r *PostgresRepository) GetGovernanceSyncState(ctx context.Context, taskID uuid.UUID) (domain.TaskGovernanceSyncState, error) {
 	row := r.db.Pool().QueryRow(ctx, `
-		SELECT task_id, review_request_id, last_review_status, last_review_http_status,
+		SELECT task_id, governance_request_id, last_governance_status, last_governance_http_status,
 		       last_checked_at, last_error, consecutive_failures, next_check_at, created_at, updated_at
-		FROM companion_task_review_sync_state
+		FROM companion_task_governance_sync_state
 		WHERE task_id = $1
 	`, taskID)
-	state, err := scanReviewSyncState(row)
+	state, err := scanGovernanceSyncState(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.TaskReviewSyncState{}, ErrNotFound
+			return domain.TaskGovernanceSyncState{}, ErrNotFound
 		}
-		return domain.TaskReviewSyncState{}, fmt.Errorf("get review sync state: %w", err)
+		return domain.TaskGovernanceSyncState{}, fmt.Errorf("get governance sync state: %w", err)
 	}
 	return state, nil
 }
 
-func (r *PostgresRepository) UpsertReviewSyncState(ctx context.Context, s domain.TaskReviewSyncState) (domain.TaskReviewSyncState, error) {
+func (r *PostgresRepository) UpsertGovernanceSyncState(ctx context.Context, s domain.TaskGovernanceSyncState) (domain.TaskGovernanceSyncState, error) {
 	now := time.Now().UTC()
 	if s.CreatedAt.IsZero() {
 		s.CreatedAt = now
 	}
 	s.UpdatedAt = now
 	_, err := r.db.Pool().Exec(ctx, `
-		INSERT INTO companion_task_review_sync_state (
-			task_id, review_request_id, last_review_status, last_review_http_status,
+		INSERT INTO companion_task_governance_sync_state (
+			task_id, governance_request_id, last_governance_status, last_governance_http_status,
 			last_checked_at, last_error, consecutive_failures, next_check_at, created_at, updated_at
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 		ON CONFLICT (task_id) DO UPDATE SET
-			review_request_id = EXCLUDED.review_request_id,
-			last_review_status = EXCLUDED.last_review_status,
-			last_review_http_status = EXCLUDED.last_review_http_status,
+			governance_request_id = EXCLUDED.governance_request_id,
+			last_governance_status = EXCLUDED.last_governance_status,
+			last_governance_http_status = EXCLUDED.last_governance_http_status,
 			last_checked_at = EXCLUDED.last_checked_at,
 			last_error = EXCLUDED.last_error,
 			consecutive_failures = EXCLUDED.consecutive_failures,
 			next_check_at = EXCLUDED.next_check_at,
 			updated_at = EXCLUDED.updated_at
-	`, s.TaskID, s.ReviewRequestID, s.LastReviewStatus, s.LastReviewHTTPStatus,
+	`, s.TaskID, s.GovernanceRequestID, s.LastGovernanceStatus, s.LastGovernanceHTTPStatus,
 		s.LastCheckedAt, s.LastError, s.ConsecutiveFailures, s.NextCheckAt, s.CreatedAt, s.UpdatedAt)
 	if err != nil {
-		return domain.TaskReviewSyncState{}, fmt.Errorf("upsert review sync state: %w", err)
+		return domain.TaskGovernanceSyncState{}, fmt.Errorf("upsert governance sync state: %w", err)
 	}
 	return s, nil
 }
@@ -406,9 +406,9 @@ func (r *PostgresRepository) InsertAction(ctx context.Context, a domain.TaskActi
 		a.Payload = json.RawMessage(`{}`)
 	}
 	_, err := r.db.Pool().Exec(ctx, `
-		INSERT INTO companion_task_actions (id, task_id, action_type, payload, review_request_id, error_message, created_at)
+		INSERT INTO companion_task_actions (id, task_id, action_type, payload, governance_request_id, error_message, created_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7)
-	`, a.ID, a.TaskID, a.ActionType, a.Payload, a.ReviewRequestID, nullIfEmpty(a.ErrorMessage), a.CreatedAt)
+	`, a.ID, a.TaskID, a.ActionType, a.Payload, a.GovernanceRequestID, nullIfEmpty(a.ErrorMessage), a.CreatedAt)
 	if err != nil {
 		return domain.TaskAction{}, fmt.Errorf("insert action: %w", err)
 	}
@@ -422,17 +422,17 @@ func nullIfEmpty(s string) any {
 	return s
 }
 
-func (r *PostgresRepository) UpdateActionReviewResult(ctx context.Context, actionID uuid.UUID, reviewRequestID *uuid.UUID, errMsg string) error {
+func (r *PostgresRepository) UpdateActionGovernanceResult(ctx context.Context, actionID uuid.UUID, governanceRequestID *uuid.UUID, errMsg string) error {
 	var rid any
-	if reviewRequestID != nil {
-		rid = *reviewRequestID
+	if governanceRequestID != nil {
+		rid = *governanceRequestID
 	}
 	var em any
 	if errMsg != "" {
 		em = errMsg
 	}
 	_, err := r.db.Pool().Exec(ctx, `
-		UPDATE companion_task_actions SET review_request_id = $2, error_message = $3 WHERE id = $1
+		UPDATE companion_task_actions SET governance_request_id = $2, error_message = $3 WHERE id = $1
 	`, actionID, rid, em)
 	if err != nil {
 		return fmt.Errorf("update action: %w", err)
@@ -442,7 +442,7 @@ func (r *PostgresRepository) UpdateActionReviewResult(ctx context.Context, actio
 
 func (r *PostgresRepository) ListActionsByTaskID(ctx context.Context, taskID uuid.UUID) ([]domain.TaskAction, error) {
 	rows, err := r.db.Pool().Query(ctx, `
-		SELECT id, task_id, action_type, payload, review_request_id, error_message, created_at
+		SELECT id, task_id, action_type, payload, governance_request_id, error_message, created_at
 		FROM companion_task_actions WHERE task_id = $1 ORDER BY created_at ASC
 	`, taskID)
 	if err != nil {
@@ -505,23 +505,23 @@ type rowScanner interface {
 
 func scanTask(row rowScanner) (domain.Task, error) {
 	var t domain.Task
-	var reviewStatus *string
-	var reviewLastChecked *time.Time
-	var reviewErr *string
+	var governanceStatus *string
+	var governanceLastChecked *time.Time
+	var governanceErr *string
 	var closed *time.Time
 	err := row.Scan(
 		&t.ID, &t.OrgID, &t.Title, &t.Goal, &t.Status, &t.Priority, &t.CreatedBy, &t.AssignedTo, &t.Channel, &t.Summary,
-		&t.ContextJSON, &reviewStatus, &reviewLastChecked, &reviewErr, &t.CreatedAt, &t.UpdatedAt, &closed,
+		&t.ContextJSON, &governanceStatus, &governanceLastChecked, &governanceErr, &t.CreatedAt, &t.UpdatedAt, &closed,
 	)
 	if err != nil {
 		return domain.Task{}, err
 	}
-	if reviewStatus != nil {
-		t.ReviewStatus = *reviewStatus
+	if governanceStatus != nil {
+		t.GovernanceStatus = *governanceStatus
 	}
-	t.ReviewLastCheckedAt = reviewLastChecked
-	if reviewErr != nil {
-		t.ReviewSyncError = *reviewErr
+	t.GovernanceLastCheckedAt = governanceLastChecked
+	if governanceErr != nil {
+		t.GovernanceSyncError = *governanceErr
 	}
 	t.ClosedAt = closed
 	return t, nil
@@ -541,20 +541,20 @@ func scanAction(row rowScanner) (domain.TaskAction, error) {
 	if err != nil {
 		return domain.TaskAction{}, err
 	}
-	a.ReviewRequestID = rid
+	a.GovernanceRequestID = rid
 	if errMsg != nil {
 		a.ErrorMessage = *errMsg
 	}
 	return a, nil
 }
 
-func scanReviewSyncState(row rowScanner) (domain.TaskReviewSyncState, error) {
-	var s domain.TaskReviewSyncState
+func scanGovernanceSyncState(row rowScanner) (domain.TaskGovernanceSyncState, error) {
+	var s domain.TaskGovernanceSyncState
 	err := row.Scan(
 		&s.TaskID,
-		&s.ReviewRequestID,
-		&s.LastReviewStatus,
-		&s.LastReviewHTTPStatus,
+		&s.GovernanceRequestID,
+		&s.LastGovernanceStatus,
+		&s.LastGovernanceHTTPStatus,
 		&s.LastCheckedAt,
 		&s.LastError,
 		&s.ConsecutiveFailures,
@@ -563,7 +563,7 @@ func scanReviewSyncState(row rowScanner) (domain.TaskReviewSyncState, error) {
 		&s.UpdatedAt,
 	)
 	if err != nil {
-		return domain.TaskReviewSyncState{}, err
+		return domain.TaskGovernanceSyncState{}, err
 	}
 	return s, nil
 }

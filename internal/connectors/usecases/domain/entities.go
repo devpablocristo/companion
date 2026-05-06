@@ -39,7 +39,7 @@ type Capability struct {
 	RequiredRoles      []string              `json:"required_roles,omitempty"`
 	RequiredScopes     []string              `json:"required_scopes,omitempty"`
 	RequiredModules    []string              `json:"required_modules,omitempty"`
-	RequiresReview     bool                  `json:"requires_review"`
+	RequiresGovernance     bool                  `json:"requires_governance"`
 	ApprovalPolicy     ApprovalPolicy        `json:"approval_policy,omitempty"`
 	InputSchema        map[string]any        `json:"input_schema,omitempty"`
 	OutputSchema       map[string]any        `json:"output_schema,omitempty"`
@@ -96,7 +96,7 @@ type CapabilityDecision struct {
 	Operation           string   `json:"operation"`
 	SideEffectClass     string   `json:"side_effect_class"`
 	RiskClass           string   `json:"risk_class"`
-	RequiresReview      bool     `json:"requires_review"`
+	RequiresGovernance      bool     `json:"requires_governance"`
 	RequiredScopes      []string `json:"required_scopes,omitempty"`
 	IdempotencyRequired bool     `json:"idempotency_required"`
 }
@@ -120,7 +120,7 @@ type ExecutionSpec struct {
 	Payload         json.RawMessage
 	IdempotencyKey  string
 	TaskID          *uuid.UUID
-	ReviewRequestID *uuid.UUID
+	GovernanceRequestID *uuid.UUID
 }
 
 // ExecutionResult resultado de una ejecución.
@@ -140,7 +140,7 @@ type ExecutionResult struct {
 	DurationMS      int64
 	IdempotencyKey  string
 	TaskID          *uuid.UUID
-	ReviewRequestID *uuid.UUID
+	GovernanceRequestID *uuid.UUID
 	CreatedAt       time.Time
 }
 
@@ -182,9 +182,9 @@ func (c Capability) HasSideEffect() bool {
 	return c.SideEffect || mode == CapabilityModeWrite || sideEffectClass == SideEffectClassWrite || sideEffectClass == SideEffectClassNotify || sideEffectClass == SideEffectClassExecute || !c.ReadOnly && mode != CapabilityModeRead
 }
 
-// NeedsReview indica si Nexus debe aprobar/permitir antes de ejecutar.
-func (c Capability) NeedsReview() bool {
-	return c.RequiresReview || c.ApprovalPolicy.Required || c.HasSideEffect()
+// NeedsGovernance indica si Nexus debe aprobar/permitir antes de ejecutar.
+func (c Capability) NeedsGovernance() bool {
+	return c.RequiresGovernance || c.ApprovalPolicy.Required || c.HasSideEffect()
 }
 
 // Normalized completa defaults del contrato v1 sin perder compatibilidad con
@@ -250,7 +250,7 @@ func (c Capability) Normalized(connectorID, kind string) Capability {
 	if len(c.EvidenceFields) == 0 && len(c.EvidenceRequired) > 0 {
 		c.EvidenceFields = append([]string(nil), c.EvidenceRequired...)
 	}
-	if c.NeedsReview() {
+	if c.NeedsGovernance() {
 		c.ApprovalPolicy.Required = true
 	}
 	if c.HasSideEffect() {
@@ -277,7 +277,7 @@ func (c Capability) RuntimeDecision() CapabilityDecision {
 		Operation:           c.Operation,
 		SideEffectClass:     c.SideEffectClass,
 		RiskClass:           c.RiskClass,
-		RequiresReview:      c.NeedsReview(),
+		RequiresGovernance:      c.NeedsGovernance(),
 		RequiredScopes:      append([]string(nil), c.RequiredScopes...),
 		IdempotencyRequired: c.Idempotency.Required,
 	}

@@ -120,7 +120,7 @@ func (p *PontiConnector) Execute(ctx context.Context, spec domain.ExecutionSpec)
 		DurationMS:      duration,
 		IdempotencyKey:  spec.IdempotencyKey,
 		TaskID:          spec.TaskID,
-		ReviewRequestID: spec.ReviewRequestID,
+		GovernanceRequestID: spec.GovernanceRequestID,
 		CreatedAt:       time.Now().UTC(),
 	}, nil
 }
@@ -129,9 +129,9 @@ func (p *PontiConnector) Execute(ctx context.Context, spec domain.ExecutionSpec)
 // domain.Capability del Registry. La granularidad de Companion es por tool,
 // la del manifest canónico es por paquete — esta función es el puente.
 func capabilityFromTool(m ai.CapabilityManifest, tool ai.CapabilityTool) domain.Capability {
-	requiresReview := false
+	requiresGovernance := false
 	if tool.Governance != nil {
-		requiresReview = tool.Governance.RequiresReview
+		requiresGovernance = tool.Governance.RequiresReview
 	}
 	mode := domain.CapabilityModeRead
 	sideEffectClass := domain.SideEffectClassRead
@@ -161,7 +161,7 @@ func capabilityFromTool(m ai.CapabilityManifest, tool ai.CapabilityTool) domain.
 		RequiredRoles:   append([]string(nil), tool.RequiredRoles...),
 		RequiredScopes:  []string{"companion:connectors:execute"},
 		RequiredModules: append([]string(nil), tool.RequiredModules...),
-		RequiresReview:  requiresReview,
+		RequiresGovernance:  requiresGovernance,
 		InputSchema:     tool.InputSchema,
 		OutputSchema:    tool.OutputSchema,
 		EvidenceFields:  append([]string(nil), tool.EvidenceFields...),

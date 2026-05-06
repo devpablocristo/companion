@@ -351,8 +351,8 @@ func TestPontiConnector_Capabilities_AreReadOnly(t *testing.T) {
 		if !c.ReadOnly {
 			t.Errorf("capability %q must be read_only=true in fase 1", c.ID)
 		}
-		if c.RequiresReview {
-			t.Errorf("capability %q must NOT require review in fase 1 (read-only)", c.ID)
+		if c.RequiresGovernance {
+			t.Errorf("capability %q must NOT require governance in fase 1 (read-only)", c.ID)
 		}
 		if c.RiskClass != domain.RiskClassLow {
 			t.Errorf("capability %q must risk_class=low, got %s", c.ID, c.RiskClass)

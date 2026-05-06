@@ -15,12 +15,12 @@ import (
 	"github.com/devpablocristo/core/errors/go/domainerr"
 	"github.com/google/uuid"
 
-	"github.com/devpablocristo/core/governance/go/reviewclient"
+	"github.com/devpablocristo/core/governance/go/governanceclient"
 	connectordomain "github.com/devpablocristo/companion/internal/connectors/usecases/domain"
 	domain "github.com/devpablocristo/companion/internal/tasks/usecases/domain"
 )
 
-// Identidad del servicio Companion ante Review (documentado en README).
+// Identidad del servicio Companion ante Governance (documentado en README).
 const (
 	CompanionRequesterType     = "service"
 	CompanionRequesterID       = "nexus_companion"
@@ -28,7 +28,7 @@ const (
 	ActionTypePropose          = "companion.propose"
 	TaskActionInvestigate      = "investigate"
 	TaskActionPropose          = "propose"
-	TaskActionSyncReview       = "sync_review"
+	TaskActionSyncGovernance       = "sync_governance"
 	TaskActionSetExecutionPlan = "set_execution_plan"
 	TaskActionExecuteConnector = "execute_connector"
 	TaskActionRetryExecution   = "retry_execution"
@@ -42,8 +42,8 @@ const (
 	taskMemoryKindFacts   = "task_facts"
 	taskMemoryKindSummary = "task_summary"
 
-	defaultReviewSyncInterval = 30 * time.Second
-	maxReviewSyncBackoff      = 10 * time.Minute
+	defaultGovernanceSyncInterval = 30 * time.Second
+	maxGovernanceSyncBackoff      = 10 * time.Minute
 )
 
 // marshalOrEmpty serializa v a JSON. Si falla (typically map con channels o
@@ -59,8 +59,8 @@ func marshalOrEmpty(label string, v any) json.RawMessage {
 }
 
 type governanceGateway interface {
-	SubmitRequest(ctx context.Context, idempotencyKey string, body reviewclient.SubmitRequestBody) (reviewclient.SubmitResponse, error)
-	GetRequest(ctx context.Context, id string) (reviewclient.RequestSummary, int, error)
+	SubmitRequest(ctx context.Context, idempotencyKey string, body governanceclient.SubmitRequestBody) (governanceclient.SubmitResponse, error)
+	GetRequest(ctx context.Context, id string) (governanceclient.RequestSummary, int, error)
 	ReportResult(ctx context.Context, id string, success bool, result map[string]any, durationMS int64, errorMessage string) (int, error)
 }
 
@@ -100,19 +100,19 @@ type Usecases struct {
 	orchestrator       ChatOrchestrator // nil = sin LLM (solo persiste)
 	executor           taskExecutor
 	taskMemory         taskMemoryWriter
-	reviewSyncInterval time.Duration
-	// reviewGateEnforced controla si writes bloqueados por review
-	// devuelven ErrReviewNotApproved (true → handler retorna HTTP 412
+	governanceSyncInterval time.Duration
+	// governanceGateEnforced controla si writes bloqueados por governance
+	// devuelven ErrGovernanceNotApproved (true → handler retorna HTTP 412
 	// con detalle) o ErrInvalidTaskState genérico (false → comportamiento
 	// legacy con HTTP 409). Default false para rollout gradual.
-	reviewGateEnforced bool
+	governanceGateEnforced bool
 }
 
 func NewUsecases(repo Repository, governance governanceGateway) *Usecases {
 	return &Usecases{
 		repo:               repo,
 		governance:         governance,
-		reviewSyncInterval: defaultReviewSyncInterval,
+		governanceSyncInterval: defaultGovernanceSyncInterval,
 	}
 }
 
@@ -129,20 +129,20 @@ func (u *Usecases) SetTaskMemory(writer taskMemoryWriter) {
 	u.taskMemory = writer
 }
 
-// SetReviewGateEnforced activa el typed error ErrReviewNotApproved (HTTP 412)
-// para writes bloqueados por una review no aprobada. Default false: el caller
+// SetGovernanceGateEnforced activa el typed error ErrGovernanceNotApproved (HTTP 412)
+// para writes bloqueados por una governance no aprobada. Default false: el caller
 // recibe ErrInvalidTaskState como antes. Activar via env var
-// COMPANION_REVIEW_GATE_ENFORCED=true en producción una vez verificado.
-func (u *Usecases) SetReviewGateEnforced(enforced bool) {
-	u.reviewGateEnforced = enforced
+// COMPANION_GOVERNANCE_GATE_ENFORCED=true en producción una vez verificado.
+func (u *Usecases) SetGovernanceGateEnforced(enforced bool) {
+	u.governanceGateEnforced = enforced
 }
 
-func (u *Usecases) SetReviewSyncInterval(interval time.Duration) {
+func (u *Usecases) SetGovernanceSyncInterval(interval time.Duration) {
 	if interval <= 0 {
-		u.reviewSyncInterval = defaultReviewSyncInterval
+		u.governanceSyncInterval = defaultGovernanceSyncInterval
 		return
 	}
-	u.reviewSyncInterval = interval
+	u.governanceSyncInterval = interval
 }
 
 type CreateTaskInput struct {
@@ -196,9 +196,9 @@ func (u *Usecases) Get(ctx context.Context, id uuid.UUID) (domain.Task, error) {
 	return u.repo.GetTaskByID(ctx, id)
 }
 
-type LinkedReviewRequest struct {
+type LinkedGovernanceRequest struct {
 	ActionID uuid.UUID                    `json:"action_id"`
-	Request  *reviewclient.RequestSummary `json:"request,omitempty"`
+	Request  *governanceclient.RequestSummary `json:"request,omitempty"`
 }
 
 type TaskDetail struct {
@@ -206,8 +206,8 @@ type TaskDetail struct {
 	Messages             []domain.TaskMessage        `json:"messages"`
 	Actions              []domain.TaskAction         `json:"actions"`
 	Artifacts            []domain.TaskArtifact       `json:"artifacts"`
-	LinkedReviewRequests []LinkedReviewRequest       `json:"linked_review_requests"`
-	ReviewSync           *domain.TaskReviewSyncState `json:"review_sync,omitempty"`
+	LinkedGovernanceRequests []LinkedGovernanceRequest       `json:"linked_governance_requests"`
+	GovernanceSync           *domain.TaskGovernanceSyncState `json:"governance_sync,omitempty"`
 	ExecutionPlan        *domain.TaskExecutionPlan   `json:"execution_plan,omitempty"`
 	ExecutionState       *domain.TaskExecutionState  `json:"execution_state,omitempty"`
 }
@@ -231,9 +231,9 @@ func (u *Usecases) GetDetail(ctx context.Context, id uuid.UUID) (TaskDetail, err
 	if err != nil {
 		return out, err
 	}
-	state, stateErr := u.repo.GetReviewSyncState(ctx, id)
+	state, stateErr := u.repo.GetGovernanceSyncState(ctx, id)
 	if stateErr == nil {
-		out.ReviewSync = &state
+		out.GovernanceSync = &state
 	} else if !domainerr.IsNotFound(stateErr) {
 		return out, stateErr
 	}
@@ -251,27 +251,27 @@ func (u *Usecases) GetDetail(ctx context.Context, id uuid.UUID) (TaskDetail, err
 	}
 	seen := make(map[uuid.UUID]struct{})
 	for _, a := range out.Actions {
-		if a.ReviewRequestID == nil {
+		if a.GovernanceRequestID == nil {
 			continue
 		}
-		rid := *a.ReviewRequestID
+		rid := *a.GovernanceRequestID
 		if _, ok := seen[rid]; ok {
 			continue
 		}
 		seen[rid] = struct{}{}
 		sum, st, gErr := u.governance.GetRequest(ctx, rid.String())
-		lr := LinkedReviewRequest{ActionID: a.ID}
+		lr := LinkedGovernanceRequest{ActionID: a.ID}
 		if gErr != nil {
-			slog.Error("review get request failed", "error", gErr, "request_id", rid)
-			out.LinkedReviewRequests = append(out.LinkedReviewRequests, lr)
+			slog.Error("governance get request failed", "error", gErr, "request_id", rid)
+			out.LinkedGovernanceRequests = append(out.LinkedGovernanceRequests, lr)
 			continue
 		}
 		if st == 404 {
-			out.LinkedReviewRequests = append(out.LinkedReviewRequests, lr)
+			out.LinkedGovernanceRequests = append(out.LinkedGovernanceRequests, lr)
 			continue
 		}
 		lr.Request = &sum
-		out.LinkedReviewRequests = append(out.LinkedReviewRequests, lr)
+		out.LinkedGovernanceRequests = append(out.LinkedGovernanceRequests, lr)
 	}
 	return out, nil
 }
@@ -432,44 +432,44 @@ func (u *Usecases) applyTaskEvent(ctx context.Context, t domain.Task, event stri
 	return u.repo.UpdateTask(ctx, t)
 }
 
-func (u *Usecases) reviewSyncIntervalOrDefault() time.Duration {
-	if u.reviewSyncInterval <= 0 {
-		return defaultReviewSyncInterval
+func (u *Usecases) governanceSyncIntervalOrDefault() time.Duration {
+	if u.governanceSyncInterval <= 0 {
+		return defaultGovernanceSyncInterval
 	}
-	return u.reviewSyncInterval
+	return u.governanceSyncInterval
 }
 
-func nextReviewSyncAt(now time.Time, interval time.Duration, consecutiveFailures int) time.Time {
+func nextGovernanceSyncAt(now time.Time, interval time.Duration, consecutiveFailures int) time.Time {
 	if interval <= 0 {
-		interval = defaultReviewSyncInterval
+		interval = defaultGovernanceSyncInterval
 	}
 	if consecutiveFailures <= 0 {
 		return now.Add(interval)
 	}
 	delay := interval
 	for i := 1; i < consecutiveFailures; i++ {
-		if delay >= maxReviewSyncBackoff/2 {
-			delay = maxReviewSyncBackoff
+		if delay >= maxGovernanceSyncBackoff/2 {
+			delay = maxGovernanceSyncBackoff
 			break
 		}
 		delay *= 2
 	}
-	if delay > maxReviewSyncBackoff {
-		delay = maxReviewSyncBackoff
+	if delay > maxGovernanceSyncBackoff {
+		delay = maxGovernanceSyncBackoff
 	}
 	return now.Add(delay)
 }
 
-func reviewSnapshotChanged(prev *domain.TaskReviewSyncState, next domain.TaskReviewSyncState) bool {
+func governanceSnapshotChanged(prev *domain.TaskGovernanceSyncState, next domain.TaskGovernanceSyncState) bool {
 	if prev == nil {
-		return next.ReviewRequestID != uuid.Nil ||
-			next.LastReviewStatus != "" ||
-			next.LastReviewHTTPStatus != 0 ||
+		return next.GovernanceRequestID != uuid.Nil ||
+			next.LastGovernanceStatus != "" ||
+			next.LastGovernanceHTTPStatus != 0 ||
 			next.LastError != ""
 	}
-	return prev.ReviewRequestID != next.ReviewRequestID ||
-		prev.LastReviewStatus != next.LastReviewStatus ||
-		prev.LastReviewHTTPStatus != next.LastReviewHTTPStatus ||
+	return prev.GovernanceRequestID != next.GovernanceRequestID ||
+		prev.LastGovernanceStatus != next.LastGovernanceStatus ||
+		prev.LastGovernanceHTTPStatus != next.LastGovernanceHTTPStatus ||
 		prev.LastError != next.LastError
 }
 
@@ -483,8 +483,8 @@ func executionPlanChanged(prev *domain.TaskExecutionPlan, next domain.TaskExecut
 		prev.IdempotencyKey != next.IdempotencyKey
 }
 
-func isApprovedReviewStatus(status string) bool {
-	switch normalizeReviewStatus(status) {
+func isApprovedGovernanceStatus(status string) bool {
+	switch normalizeGovernanceStatus(status) {
 	case "allowed", "approved", "executed":
 		return true
 	default:
@@ -516,7 +516,7 @@ func (u *Usecases) getExecutionState(ctx context.Context, taskID uuid.UUID) (*do
 
 type taskMemorySnapshot struct {
 	Task           domain.Task
-	ReviewSync     *domain.TaskReviewSyncState
+	GovernanceSync     *domain.TaskGovernanceSyncState
 	ExecutionPlan  *domain.TaskExecutionPlan
 	ExecutionState *domain.TaskExecutionState
 }
@@ -528,12 +528,12 @@ func (u *Usecases) loadTaskMemorySnapshot(ctx context.Context, taskID uuid.UUID)
 	}
 	snapshot := taskMemorySnapshot{Task: task}
 
-	reviewSync, err := u.repo.GetReviewSyncState(ctx, taskID)
+	governanceSync, err := u.repo.GetGovernanceSyncState(ctx, taskID)
 	if err == nil {
-		snapshot.ReviewSync = &reviewSync
-		snapshot.Task.ReviewStatus = reviewSync.LastReviewStatus
-		snapshot.Task.ReviewLastCheckedAt = &reviewSync.LastCheckedAt
-		snapshot.Task.ReviewSyncError = reviewSync.LastError
+		snapshot.GovernanceSync = &governanceSync
+		snapshot.Task.GovernanceStatus = governanceSync.LastGovernanceStatus
+		snapshot.Task.GovernanceLastCheckedAt = &governanceSync.LastCheckedAt
+		snapshot.Task.GovernanceSyncError = governanceSync.LastError
 	} else if !domainerr.IsNotFound(err) {
 		return taskMemorySnapshot{}, err
 	}
@@ -559,11 +559,11 @@ func nextTaskStep(snapshot taskMemorySnapshot) string {
 	switch snapshot.Task.Status {
 	case domain.TaskStatusNew, domain.TaskStatusInvestigating:
 		if snapshot.ExecutionPlan == nil {
-			return "define execution plan and propose to review"
+			return "define execution plan and propose to governance"
 		}
-		return "propose to review"
+		return "propose to governance"
 	case domain.TaskStatusWaitingForApproval:
-		return "wait for review resolution or sync from review"
+		return "wait for governance resolution or sync from governance"
 	case domain.TaskStatusWaitingForInput:
 		if snapshot.ExecutionPlan != nil {
 			return "execute the approved task manually"
@@ -572,11 +572,11 @@ func nextTaskStep(snapshot taskMemorySnapshot) string {
 	case domain.TaskStatusExecuting, domain.TaskStatusVerifying:
 		return "observe execution and verification"
 	case domain.TaskStatusFailed:
-		if snapshot.ExecutionState != nil && snapshot.ExecutionState.Retryable && isApprovedReviewStatus(snapshot.Task.ReviewStatus) {
+		if snapshot.ExecutionState != nil && snapshot.ExecutionState.Retryable && isApprovedGovernanceStatus(snapshot.Task.GovernanceStatus) {
 			return "inspect failure and retry execution"
 		}
-		if snapshot.Task.ReviewStatus == "rejected" || snapshot.Task.ReviewStatus == "denied" {
-			return "inspect review decision and adjust the task"
+		if snapshot.Task.GovernanceStatus == "rejected" || snapshot.Task.GovernanceStatus == "denied" {
+			return "inspect governance decision and adjust the task"
 		}
 		return "inspect failure details"
 	case domain.TaskStatusDone:
@@ -599,10 +599,10 @@ func buildTaskSummary(snapshot taskMemorySnapshot) string {
 	case domain.TaskStatusInvestigating:
 		return fmt.Sprintf("%s is under investigation. Next step: %s.", prefix, nextTaskStep(snapshot))
 	case domain.TaskStatusWaitingForApproval:
-		if snapshot.ReviewSync != nil && snapshot.ReviewSync.ReviewRequestID != uuid.Nil {
-			return fmt.Sprintf("%s is waiting for Review. Request %s is currently %s.", prefix, snapshot.ReviewSync.ReviewRequestID.String(), formatStatusForMemory(snapshot.ReviewSync.LastReviewStatus))
+		if snapshot.GovernanceSync != nil && snapshot.GovernanceSync.GovernanceRequestID != uuid.Nil {
+			return fmt.Sprintf("%s is waiting for Governance. Request %s is currently %s.", prefix, snapshot.GovernanceSync.GovernanceRequestID.String(), formatStatusForMemory(snapshot.GovernanceSync.LastGovernanceStatus))
 		}
-		return fmt.Sprintf("%s is waiting for Review approval.", prefix)
+		return fmt.Sprintf("%s is waiting for Governance approval.", prefix)
 	case domain.TaskStatusWaitingForInput:
 		if snapshot.ExecutionPlan != nil {
 			return fmt.Sprintf("%s is approved and ready for manual execution via %s.", prefix, snapshot.ExecutionPlan.Operation)
@@ -616,8 +616,8 @@ func buildTaskSummary(snapshot taskMemorySnapshot) string {
 		if snapshot.ExecutionState != nil && snapshot.ExecutionState.VerificationResult.Status == domain.VerificationStatusVerified {
 			return fmt.Sprintf("%s completed successfully and the latest execution was verified.", prefix)
 		}
-		if isApprovedReviewStatus(snapshot.Task.ReviewStatus) {
-			return fmt.Sprintf("%s completed successfully after Review resolved %s.", prefix, formatStatusForMemory(snapshot.Task.ReviewStatus))
+		if isApprovedGovernanceStatus(snapshot.Task.GovernanceStatus) {
+			return fmt.Sprintf("%s completed successfully after Governance resolved %s.", prefix, formatStatusForMemory(snapshot.Task.GovernanceStatus))
 		}
 		return fmt.Sprintf("%s completed successfully.", prefix)
 	case domain.TaskStatusFailed:
@@ -627,8 +627,8 @@ func buildTaskSummary(snapshot taskMemorySnapshot) string {
 			}
 			return fmt.Sprintf("%s failed during execution. Last error: %s.", prefix, snapshot.ExecutionState.LastError)
 		}
-		if snapshot.Task.ReviewStatus != "" {
-			return fmt.Sprintf("%s failed because Review resolved %s.", prefix, formatStatusForMemory(snapshot.Task.ReviewStatus))
+		if snapshot.Task.GovernanceStatus != "" {
+			return fmt.Sprintf("%s failed because Governance resolved %s.", prefix, formatStatusForMemory(snapshot.Task.GovernanceStatus))
 		}
 		return fmt.Sprintf("%s failed and needs operator attention.", prefix)
 	default:
@@ -668,24 +668,24 @@ func buildTaskFactsPayload(snapshot taskMemorySnapshot, reason string) json.RawM
 	if snapshot.Task.ClosedAt != nil {
 		payload["closed_at"] = snapshot.Task.ClosedAt.UTC().Format(time.RFC3339)
 	}
-	if snapshot.Task.ReviewStatus != "" {
-		payload["review_status"] = snapshot.Task.ReviewStatus
+	if snapshot.Task.GovernanceStatus != "" {
+		payload["governance_status"] = snapshot.Task.GovernanceStatus
 	}
-	if snapshot.Task.ReviewLastCheckedAt != nil {
-		payload["review_last_checked_at"] = snapshot.Task.ReviewLastCheckedAt.UTC().Format(time.RFC3339)
+	if snapshot.Task.GovernanceLastCheckedAt != nil {
+		payload["governance_last_checked_at"] = snapshot.Task.GovernanceLastCheckedAt.UTC().Format(time.RFC3339)
 	}
-	if snapshot.Task.ReviewSyncError != "" {
-		payload["review_sync_error"] = snapshot.Task.ReviewSyncError
+	if snapshot.Task.GovernanceSyncError != "" {
+		payload["governance_sync_error"] = snapshot.Task.GovernanceSyncError
 	}
-	if snapshot.ReviewSync != nil {
-		payload["review"] = map[string]any{
-			"review_request_id":    snapshot.ReviewSync.ReviewRequestID.String(),
-			"status":               snapshot.ReviewSync.LastReviewStatus,
-			"http_status":          snapshot.ReviewSync.LastReviewHTTPStatus,
-			"last_checked_at":      snapshot.ReviewSync.LastCheckedAt.UTC().Format(time.RFC3339),
-			"next_check_at":        snapshot.ReviewSync.NextCheckAt.UTC().Format(time.RFC3339),
-			"consecutive_failures": snapshot.ReviewSync.ConsecutiveFailures,
-			"last_error":           snapshot.ReviewSync.LastError,
+	if snapshot.GovernanceSync != nil {
+		payload["governance"] = map[string]any{
+			"governance_request_id":    snapshot.GovernanceSync.GovernanceRequestID.String(),
+			"status":               snapshot.GovernanceSync.LastGovernanceStatus,
+			"http_status":          snapshot.GovernanceSync.LastGovernanceHTTPStatus,
+			"last_checked_at":      snapshot.GovernanceSync.LastCheckedAt.UTC().Format(time.RFC3339),
+			"next_check_at":        snapshot.GovernanceSync.NextCheckAt.UTC().Format(time.RFC3339),
+			"consecutive_failures": snapshot.GovernanceSync.ConsecutiveFailures,
+			"last_error":           snapshot.GovernanceSync.LastError,
 		}
 	}
 	if snapshot.ExecutionPlan != nil {
@@ -725,7 +725,7 @@ func (u *Usecases) syncTaskMemory(ctx context.Context, taskID uuid.UUID, reason 
 	summaryPayload := marshalOrEmpty("task_summary", map[string]any{
 		"projection_reason": reason,
 		"status":            snapshot.Task.Status,
-		"review_status":     snapshot.Task.ReviewStatus,
+		"governance_status":     snapshot.Task.GovernanceStatus,
 		"next_step":         nextTaskStep(snapshot),
 	})
 	if err := u.taskMemory.UpsertTaskMemory(ctx, taskID, taskMemoryKindSummary, taskMemoryCurrentKey, buildTaskSummary(snapshot), summaryPayload); err != nil {
@@ -736,9 +736,9 @@ func (u *Usecases) syncTaskMemory(ctx context.Context, taskID uuid.UUID, reason 
 	}
 }
 
-func buildReviewSyncActionPayload(origin string, prev *domain.TaskReviewSyncState, next domain.TaskReviewSyncState, beforeStatus, afterStatus, event string) json.RawMessage {
+func buildGovernanceSyncActionPayload(origin string, prev *domain.TaskGovernanceSyncState, next domain.TaskGovernanceSyncState, beforeStatus, afterStatus, event string) json.RawMessage {
 	type syncSnapshot struct {
-		ReviewRequestID string `json:"review_request_id,omitempty"`
+		GovernanceRequestID string `json:"governance_request_id,omitempty"`
 		Status          string `json:"status,omitempty"`
 		HTTPStatus      int    `json:"http_status,omitempty"`
 		Error           string `json:"error,omitempty"`
@@ -752,55 +752,55 @@ func buildReviewSyncActionPayload(origin string, prev *domain.TaskReviewSyncStat
 		payload["transition_event"] = event
 	}
 	current := syncSnapshot{
-		Status:     next.LastReviewStatus,
-		HTTPStatus: next.LastReviewHTTPStatus,
+		Status:     next.LastGovernanceStatus,
+		HTTPStatus: next.LastGovernanceHTTPStatus,
 		Error:      next.LastError,
 	}
-	if next.ReviewRequestID != uuid.Nil {
-		current.ReviewRequestID = next.ReviewRequestID.String()
+	if next.GovernanceRequestID != uuid.Nil {
+		current.GovernanceRequestID = next.GovernanceRequestID.String()
 	}
 	payload["current"] = current
 	if prev != nil {
 		previous := syncSnapshot{
-			Status:     prev.LastReviewStatus,
-			HTTPStatus: prev.LastReviewHTTPStatus,
+			Status:     prev.LastGovernanceStatus,
+			HTTPStatus: prev.LastGovernanceHTTPStatus,
 			Error:      prev.LastError,
 		}
-		if prev.ReviewRequestID != uuid.Nil {
-			previous.ReviewRequestID = prev.ReviewRequestID.String()
+		if prev.GovernanceRequestID != uuid.Nil {
+			previous.GovernanceRequestID = prev.GovernanceRequestID.String()
 		}
 		payload["previous"] = previous
 	}
-	return marshalOrEmpty("review_sync_payload", payload)
+	return marshalOrEmpty("governance_sync_payload", payload)
 }
 
-func (u *Usecases) latestReviewRequestIDForTask(ctx context.Context, taskID uuid.UUID, state *domain.TaskReviewSyncState) (uuid.UUID, error) {
-	if state != nil && state.ReviewRequestID != uuid.Nil {
-		return state.ReviewRequestID, nil
+func (u *Usecases) latestGovernanceRequestIDForTask(ctx context.Context, taskID uuid.UUID, state *domain.TaskGovernanceSyncState) (uuid.UUID, error) {
+	if state != nil && state.GovernanceRequestID != uuid.Nil {
+		return state.GovernanceRequestID, nil
 	}
-	return u.repo.LatestProposeReviewRequestID(ctx, taskID)
+	return u.repo.LatestProposeGovernanceRequestID(ctx, taskID)
 }
 
-func (u *Usecases) persistReviewSyncAction(ctx context.Context, taskID uuid.UUID, reviewRequestID uuid.UUID, origin string, prev *domain.TaskReviewSyncState, next domain.TaskReviewSyncState, beforeStatus, afterStatus, event string) {
-	payload := buildReviewSyncActionPayload(origin, prev, next, beforeStatus, afterStatus, event)
-	reviewRequestIDCopy := reviewRequestID
+func (u *Usecases) persistGovernanceSyncAction(ctx context.Context, taskID uuid.UUID, governanceRequestID uuid.UUID, origin string, prev *domain.TaskGovernanceSyncState, next domain.TaskGovernanceSyncState, beforeStatus, afterStatus, event string) {
+	payload := buildGovernanceSyncActionPayload(origin, prev, next, beforeStatus, afterStatus, event)
+	governanceRequestIDCopy := governanceRequestID
 	if _, err := u.repo.InsertAction(ctx, domain.TaskAction{
 		TaskID:          taskID,
-		ActionType:      TaskActionSyncReview,
+		ActionType:      TaskActionSyncGovernance,
 		Payload:         payload,
-		ReviewRequestID: &reviewRequestIDCopy,
+		GovernanceRequestID: &governanceRequestIDCopy,
 	}); err != nil {
-		slog.Warn("companion sync_review action failed", "task_id", taskID.String(), "review_request_id", reviewRequestID.String(), "error", err)
+		slog.Warn("companion sync_governance action failed", "task_id", taskID.String(), "governance_request_id", governanceRequestID.String(), "error", err)
 	}
 }
 
-func (u *Usecases) syncTaskWithReview(ctx context.Context, t domain.Task, origin string) (domain.Task, *domain.TaskReviewSyncState, error) {
+func (u *Usecases) syncTaskWithGovernance(ctx context.Context, t domain.Task, origin string) (domain.Task, *domain.TaskGovernanceSyncState, error) {
 	if t.Status != domain.TaskStatusWaitingForApproval {
 		return t, nil, nil
 	}
 
-	var prevState *domain.TaskReviewSyncState
-	currentState, err := u.repo.GetReviewSyncState(ctx, t.ID)
+	var prevState *domain.TaskGovernanceSyncState
+	currentState, err := u.repo.GetGovernanceSyncState(ctx, t.ID)
 	if err == nil {
 		stateCopy := currentState
 		prevState = &stateCopy
@@ -808,7 +808,7 @@ func (u *Usecases) syncTaskWithReview(ctx context.Context, t domain.Task, origin
 		return domain.Task{}, nil, err
 	}
 
-	rid, err := u.latestReviewRequestIDForTask(ctx, t.ID, prevState)
+	rid, err := u.latestGovernanceRequestIDForTask(ctx, t.ID, prevState)
 	if err != nil {
 		if domainerr.IsNotFound(err) {
 			return t, prevState, nil
@@ -817,16 +817,16 @@ func (u *Usecases) syncTaskWithReview(ctx context.Context, t domain.Task, origin
 	}
 
 	now := time.Now().UTC()
-	nextState := domain.TaskReviewSyncState{
+	nextState := domain.TaskGovernanceSyncState{
 		TaskID:          t.ID,
-		ReviewRequestID: rid,
+		GovernanceRequestID: rid,
 		LastCheckedAt:   now,
-		NextCheckAt:     nextReviewSyncAt(now, u.reviewSyncIntervalOrDefault(), 0),
+		NextCheckAt:     nextGovernanceSyncAt(now, u.governanceSyncIntervalOrDefault(), 0),
 	}
 	if prevState != nil {
 		nextState.CreatedAt = prevState.CreatedAt
-		nextState.LastReviewStatus = prevState.LastReviewStatus
-		nextState.LastReviewHTTPStatus = prevState.LastReviewHTTPStatus
+		nextState.LastGovernanceStatus = prevState.LastGovernanceStatus
+		nextState.LastGovernanceHTTPStatus = prevState.LastGovernanceHTTPStatus
 		nextState.LastError = prevState.LastError
 		nextState.ConsecutiveFailures = prevState.ConsecutiveFailures
 	}
@@ -836,53 +836,53 @@ func (u *Usecases) syncTaskWithReview(ctx context.Context, t domain.Task, origin
 	appliedEvent := ""
 
 	if gErr != nil {
-		nextState.LastReviewHTTPStatus = st
+		nextState.LastGovernanceHTTPStatus = st
 		nextState.LastError = gErr.Error()
 		nextState.ConsecutiveFailures++
-		nextState.NextCheckAt = nextReviewSyncAt(now, u.reviewSyncIntervalOrDefault(), nextState.ConsecutiveFailures)
-		stateOut, upErr := u.repo.UpsertReviewSyncState(ctx, nextState)
+		nextState.NextCheckAt = nextGovernanceSyncAt(now, u.governanceSyncIntervalOrDefault(), nextState.ConsecutiveFailures)
+		stateOut, upErr := u.repo.UpsertGovernanceSyncState(ctx, nextState)
 		if upErr != nil {
 			return domain.Task{}, prevState, upErr
 		}
-		if reviewSnapshotChanged(prevState, stateOut) {
-			u.persistReviewSyncAction(ctx, t.ID, rid, origin, prevState, stateOut, beforeStatus, t.Status, appliedEvent)
-			u.syncTaskMemory(ctx, t.ID, "review_sync_error")
+		if governanceSnapshotChanged(prevState, stateOut) {
+			u.persistGovernanceSyncAction(ctx, t.ID, rid, origin, prevState, stateOut, beforeStatus, t.Status, appliedEvent)
+			u.syncTaskMemory(ctx, t.ID, "governance_sync_error")
 		}
-		return domain.Task{}, &stateOut, fmt.Errorf("review get request: %w", gErr)
+		return domain.Task{}, &stateOut, fmt.Errorf("governance get request: %w", gErr)
 	}
 
-	nextState.LastReviewHTTPStatus = st
+	nextState.LastGovernanceHTTPStatus = st
 
 	if st == http.StatusNotFound {
-		nextState.LastError = "review request not found"
+		nextState.LastError = "governance request not found"
 		nextState.ConsecutiveFailures++
-		nextState.NextCheckAt = nextReviewSyncAt(now, u.reviewSyncIntervalOrDefault(), nextState.ConsecutiveFailures)
-		stateOut, upErr := u.repo.UpsertReviewSyncState(ctx, nextState)
+		nextState.NextCheckAt = nextGovernanceSyncAt(now, u.governanceSyncIntervalOrDefault(), nextState.ConsecutiveFailures)
+		stateOut, upErr := u.repo.UpsertGovernanceSyncState(ctx, nextState)
 		if upErr != nil {
 			return domain.Task{}, prevState, upErr
 		}
-		if reviewSnapshotChanged(prevState, stateOut) {
-			u.persistReviewSyncAction(ctx, t.ID, rid, origin, prevState, stateOut, beforeStatus, t.Status, appliedEvent)
-			u.syncTaskMemory(ctx, t.ID, "review_sync_not_found")
+		if governanceSnapshotChanged(prevState, stateOut) {
+			u.persistGovernanceSyncAction(ctx, t.ID, rid, origin, prevState, stateOut, beforeStatus, t.Status, appliedEvent)
+			u.syncTaskMemory(ctx, t.ID, "governance_sync_not_found")
 		}
-		t.ReviewStatus = stateOut.LastReviewStatus
-		t.ReviewLastCheckedAt = &stateOut.LastCheckedAt
-		t.ReviewSyncError = stateOut.LastError
+		t.GovernanceStatus = stateOut.LastGovernanceStatus
+		t.GovernanceLastCheckedAt = &stateOut.LastCheckedAt
+		t.GovernanceSyncError = stateOut.LastError
 		return t, &stateOut, nil
 	}
-	if normalizedStatus := normalizeReviewStatus(sum.Status); normalizedStatus != "" {
-		nextState.LastReviewStatus = normalizedStatus
+	if normalizedStatus := normalizeGovernanceStatus(sum.Status); normalizedStatus != "" {
+		nextState.LastGovernanceStatus = normalizedStatus
 	}
 
 	nextState.LastError = ""
 	nextState.ConsecutiveFailures = 0
-	nextState.NextCheckAt = nextReviewSyncAt(now, u.reviewSyncIntervalOrDefault(), 0)
+	nextState.NextCheckAt = nextGovernanceSyncAt(now, u.governanceSyncIntervalOrDefault(), 0)
 
 	plan, planErr := u.getExecutionPlan(ctx, t.ID)
 	if planErr != nil {
 		return domain.Task{}, prevState, planErr
 	}
-	ev, apply := eventFromReviewRequestStatusWithExecutionPlan(sum.Status, plan != nil)
+	ev, apply := eventFromGovernanceRequestStatusWithExecutionPlan(sum.Status, plan != nil)
 	if apply {
 		appliedEvent = ev
 		t, err = u.applyTaskEvent(ctx, t, ev)
@@ -891,22 +891,22 @@ func (u *Usecases) syncTaskWithReview(ctx context.Context, t domain.Task, origin
 		}
 	}
 
-	stateOut, upErr := u.repo.UpsertReviewSyncState(ctx, nextState)
+	stateOut, upErr := u.repo.UpsertGovernanceSyncState(ctx, nextState)
 	if upErr != nil {
 		return domain.Task{}, prevState, upErr
 	}
-	if reviewSnapshotChanged(prevState, stateOut) || beforeStatus != t.Status {
-		u.persistReviewSyncAction(ctx, t.ID, rid, origin, prevState, stateOut, beforeStatus, t.Status, appliedEvent)
-		u.syncTaskMemory(ctx, t.ID, "review_sync")
+	if governanceSnapshotChanged(prevState, stateOut) || beforeStatus != t.Status {
+		u.persistGovernanceSyncAction(ctx, t.ID, rid, origin, prevState, stateOut, beforeStatus, t.Status, appliedEvent)
+		u.syncTaskMemory(ctx, t.ID, "governance_sync")
 	}
-	t.ReviewStatus = stateOut.LastReviewStatus
-	t.ReviewLastCheckedAt = &stateOut.LastCheckedAt
-	t.ReviewSyncError = stateOut.LastError
+	t.GovernanceStatus = stateOut.LastGovernanceStatus
+	t.GovernanceLastCheckedAt = &stateOut.LastCheckedAt
+	t.GovernanceSyncError = stateOut.LastError
 
-	slog.Info("companion task synced from review",
+	slog.Info("companion task synced from governance",
 		"task_id", t.ID.String(),
-		"review_request_id", rid.String(),
-		"review_status", stateOut.LastReviewStatus,
+		"governance_request_id", rid.String(),
+		"governance_status", stateOut.LastGovernanceStatus,
 		"task_status", t.Status,
 		"origin", origin,
 	)
@@ -944,9 +944,9 @@ type ProposeInput struct {
 	SessionID      string
 }
 
-func (u *Usecases) Propose(ctx context.Context, taskID uuid.UUID, in ProposeInput) (domain.Task, domain.TaskAction, reviewclient.SubmitResponse, error) {
+func (u *Usecases) Propose(ctx context.Context, taskID uuid.UUID, in ProposeInput) (domain.Task, domain.TaskAction, governanceclient.SubmitResponse, error) {
 	var zeroA domain.TaskAction
-	var zeroSub reviewclient.SubmitResponse
+	var zeroSub governanceclient.SubmitResponse
 	t, err := u.repo.GetTaskByID(ctx, taskID)
 	if err != nil {
 		return domain.Task{}, zeroA, zeroSub, err
@@ -1000,7 +1000,7 @@ func (u *Usecases) Propose(ctx context.Context, taskID uuid.UUID, in ProposeInpu
 	}
 
 	idem := fmt.Sprintf("companion-propose-%s", action.ID.String())
-	submitBody := reviewclient.SubmitRequestBody{
+	submitBody := governanceclient.SubmitRequestBody{
 		RequesterType:  CompanionRequesterType,
 		RequesterID:    CompanionRequesterID,
 		RequesterName:  CompanionRequesterName,
@@ -1014,37 +1014,37 @@ func (u *Usecases) Propose(ctx context.Context, taskID uuid.UUID, in ProposeInpu
 
 	submitOut, subErr := u.governance.SubmitRequest(ctx, idem, submitBody)
 	if subErr != nil {
-		slog.Warn("companion propose review submit failed",
+		slog.Warn("companion propose governance submit failed",
 			"task_id", taskID.String(),
 			"action_id", action.ID.String(),
 			"error", subErr,
 		)
-		_ = u.repo.UpdateActionReviewResult(ctx, action.ID, nil, subErr.Error())
+		_ = u.repo.UpdateActionGovernanceResult(ctx, action.ID, nil, subErr.Error())
 		t2, ge := u.repo.GetTaskByID(ctx, taskID)
 		if ge != nil {
 			return domain.Task{}, action, zeroSub, ge
 		}
-		return t2, action, zeroSub, fmt.Errorf("%w: %v", ErrReviewSubmit, subErr)
+		return t2, action, zeroSub, fmt.Errorf("%w: %v", ErrGovernanceSubmit, subErr)
 	}
 	reqUUID, perr := uuid.Parse(submitOut.RequestID)
 	if perr != nil {
-		_ = u.repo.UpdateActionReviewResult(ctx, action.ID, nil, "invalid request_id from review")
+		_ = u.repo.UpdateActionGovernanceResult(ctx, action.ID, nil, "invalid request_id from governance")
 		return domain.Task{}, action, zeroSub, fmt.Errorf("parse request_id: %w", perr)
 	}
-	if err := u.repo.UpdateActionReviewResult(ctx, action.ID, &reqUUID, ""); err != nil {
+	if err := u.repo.UpdateActionGovernanceResult(ctx, action.ID, &reqUUID, ""); err != nil {
 		return domain.Task{}, action, zeroSub, err
 	}
 
 	now := time.Now().UTC()
-	state, err := u.repo.UpsertReviewSyncState(ctx, domain.TaskReviewSyncState{
+	state, err := u.repo.UpsertGovernanceSyncState(ctx, domain.TaskGovernanceSyncState{
 		TaskID:               taskID,
-		ReviewRequestID:      reqUUID,
-		LastReviewStatus:     normalizeReviewStatus(submitOut.Status),
-		LastReviewHTTPStatus: http.StatusCreated,
+		GovernanceRequestID:      reqUUID,
+		LastGovernanceStatus:     normalizeGovernanceStatus(submitOut.Status),
+		LastGovernanceHTTPStatus: http.StatusCreated,
 		LastCheckedAt:        now,
 		LastError:            "",
 		ConsecutiveFailures:  0,
-		NextCheckAt:          nextReviewSyncAt(now, u.reviewSyncIntervalOrDefault(), 0),
+		NextCheckAt:          nextGovernanceSyncAt(now, u.governanceSyncIntervalOrDefault(), 0),
 	})
 	if err != nil {
 		return domain.Task{}, action, zeroSub, err
@@ -1056,10 +1056,10 @@ func (u *Usecases) Propose(ctx context.Context, taskID uuid.UUID, in ProposeInpu
 	}
 	ev, evErr := eventFromSubmitResponseWithExecutionPlan(submitOut, plan != nil)
 	if evErr != nil {
-		slog.Error("companion propose unexpected review status",
+		slog.Error("companion propose unexpected governance status",
 			"task_id", taskID.String(),
 			"action_id", action.ID.String(),
-			"review_status", submitOut.Status,
+			"governance_status", submitOut.Status,
 			"error", evErr,
 		)
 		return domain.Task{}, action, submitOut, evErr
@@ -1068,16 +1068,16 @@ func (u *Usecases) Propose(ctx context.Context, taskID uuid.UUID, in ProposeInpu
 	if err != nil {
 		return domain.Task{}, action, submitOut, err
 	}
-	t.ReviewStatus = state.LastReviewStatus
-	t.ReviewLastCheckedAt = &state.LastCheckedAt
-	t.ReviewSyncError = state.LastError
-	action.ReviewRequestID = &reqUUID
-	slog.Info("companion propose submitted to review",
+	t.GovernanceStatus = state.LastGovernanceStatus
+	t.GovernanceLastCheckedAt = &state.LastCheckedAt
+	t.GovernanceSyncError = state.LastError
+	action.GovernanceRequestID = &reqUUID
+	slog.Info("companion propose submitted to governance",
 		"task_id", taskID.String(),
 		"action_id", action.ID.String(),
-		"review_request_id", reqUUID.String(),
-		"review_decision", submitOut.Decision,
-		"review_status", submitOut.Status,
+		"governance_request_id", reqUUID.String(),
+		"governance_decision", submitOut.Decision,
+		"governance_status", submitOut.Status,
 		"task_status", t.Status,
 	)
 	u.syncTaskMemory(ctx, taskID, "propose")
@@ -1181,9 +1181,9 @@ func buildConnectorExecutionPayload(result connectordomain.ExecutionResult) json
 		"retryable":       result.Retryable,
 		"duration_ms":     result.DurationMS,
 		"idempotency_key": result.IdempotencyKey,
-		"review_request_id": func() string {
-			if result.ReviewRequestID != nil {
-				return result.ReviewRequestID.String()
+		"governance_request_id": func() string {
+			if result.GovernanceRequestID != nil {
+				return result.GovernanceRequestID.String()
 			}
 			return ""
 		}(),
@@ -1297,9 +1297,9 @@ func buildExecutionState(prev *domain.TaskExecutionState, taskID uuid.UUID, resu
 	}
 }
 
-func defaultExecutionIdempotencyKey(taskID uuid.UUID, reviewRequestID *uuid.UUID) string {
-	if reviewRequestID != nil && *reviewRequestID != uuid.Nil {
-		return fmt.Sprintf("task-execute-%s-%s", taskID.String(), reviewRequestID.String())
+func defaultExecutionIdempotencyKey(taskID uuid.UUID, governanceRequestID *uuid.UUID) string {
+	if governanceRequestID != nil && *governanceRequestID != uuid.Nil {
+		return fmt.Sprintf("task-execute-%s-%s", taskID.String(), governanceRequestID.String())
 	}
 	return fmt.Sprintf("task-execute-%s", taskID.String())
 }
@@ -1314,9 +1314,9 @@ func executionActorID(t domain.Task) string {
 	return CompanionRequesterID
 }
 
-func (u *Usecases) refreshReviewSnapshot(ctx context.Context, taskID uuid.UUID, origin string) (*domain.TaskReviewSyncState, error) {
-	var prevState *domain.TaskReviewSyncState
-	currentState, err := u.repo.GetReviewSyncState(ctx, taskID)
+func (u *Usecases) refreshGovernanceSnapshot(ctx context.Context, taskID uuid.UUID, origin string) (*domain.TaskGovernanceSyncState, error) {
+	var prevState *domain.TaskGovernanceSyncState
+	currentState, err := u.repo.GetGovernanceSyncState(ctx, taskID)
 	if err == nil {
 		stateCopy := currentState
 		prevState = &stateCopy
@@ -1324,51 +1324,51 @@ func (u *Usecases) refreshReviewSnapshot(ctx context.Context, taskID uuid.UUID, 
 		return nil, err
 	}
 
-	reviewRequestID, err := u.latestReviewRequestIDForTask(ctx, taskID, prevState)
+	governanceRequestID, err := u.latestGovernanceRequestIDForTask(ctx, taskID, prevState)
 	if err != nil {
 		return nil, err
 	}
 
 	now := time.Now().UTC()
-	nextState := domain.TaskReviewSyncState{
+	nextState := domain.TaskGovernanceSyncState{
 		TaskID:          taskID,
-		ReviewRequestID: reviewRequestID,
+		GovernanceRequestID: governanceRequestID,
 		LastCheckedAt:   now,
-		NextCheckAt:     nextReviewSyncAt(now, u.reviewSyncIntervalOrDefault(), 0),
+		NextCheckAt:     nextGovernanceSyncAt(now, u.governanceSyncIntervalOrDefault(), 0),
 	}
 	if prevState != nil {
 		nextState.CreatedAt = prevState.CreatedAt
-		nextState.LastReviewStatus = prevState.LastReviewStatus
-		nextState.LastReviewHTTPStatus = prevState.LastReviewHTTPStatus
+		nextState.LastGovernanceStatus = prevState.LastGovernanceStatus
+		nextState.LastGovernanceHTTPStatus = prevState.LastGovernanceHTTPStatus
 		nextState.LastError = prevState.LastError
 		nextState.ConsecutiveFailures = prevState.ConsecutiveFailures
 	}
 
-	sum, statusCode, getErr := u.governance.GetRequest(ctx, reviewRequestID.String())
+	sum, statusCode, getErr := u.governance.GetRequest(ctx, governanceRequestID.String())
 	if getErr != nil {
-		nextState.LastReviewHTTPStatus = statusCode
+		nextState.LastGovernanceHTTPStatus = statusCode
 		nextState.LastError = getErr.Error()
 		nextState.ConsecutiveFailures++
-		nextState.NextCheckAt = nextReviewSyncAt(now, u.reviewSyncIntervalOrDefault(), nextState.ConsecutiveFailures)
-		stateOut, upsertErr := u.repo.UpsertReviewSyncState(ctx, nextState)
+		nextState.NextCheckAt = nextGovernanceSyncAt(now, u.governanceSyncIntervalOrDefault(), nextState.ConsecutiveFailures)
+		stateOut, upsertErr := u.repo.UpsertGovernanceSyncState(ctx, nextState)
 		if upsertErr != nil {
 			return nil, upsertErr
 		}
-		return &stateOut, fmt.Errorf("review get request: %w", getErr)
+		return &stateOut, fmt.Errorf("governance get request: %w", getErr)
 	}
 
-	nextState.LastReviewHTTPStatus = statusCode
-	nextState.LastReviewStatus = normalizeReviewStatus(sum.Status)
+	nextState.LastGovernanceHTTPStatus = statusCode
+	nextState.LastGovernanceStatus = normalizeGovernanceStatus(sum.Status)
 	nextState.LastError = ""
 	nextState.ConsecutiveFailures = 0
-	nextState.NextCheckAt = nextReviewSyncAt(now, u.reviewSyncIntervalOrDefault(), 0)
+	nextState.NextCheckAt = nextGovernanceSyncAt(now, u.governanceSyncIntervalOrDefault(), 0)
 
-	stateOut, upsertErr := u.repo.UpsertReviewSyncState(ctx, nextState)
+	stateOut, upsertErr := u.repo.UpsertGovernanceSyncState(ctx, nextState)
 	if upsertErr != nil {
 		return nil, upsertErr
 	}
-	if reviewSnapshotChanged(prevState, stateOut) {
-		u.persistReviewSyncAction(ctx, taskID, reviewRequestID, origin, prevState, stateOut, "", "", "")
+	if governanceSnapshotChanged(prevState, stateOut) {
+		u.persistGovernanceSyncAction(ctx, taskID, governanceRequestID, origin, prevState, stateOut, "", "", "")
 	}
 	return &stateOut, nil
 }
@@ -1381,13 +1381,13 @@ func (u *Usecases) runTaskExecution(ctx context.Context, t domain.Task, plan dom
 		return out, err
 	}
 
-	var reviewRequestID *uuid.UUID
-	if syncState, syncErr := u.repo.GetReviewSyncState(ctx, t.ID); syncErr == nil && syncState.ReviewRequestID != uuid.Nil {
-		reviewRequestID = &syncState.ReviewRequestID
+	var governanceRequestID *uuid.UUID
+	if syncState, syncErr := u.repo.GetGovernanceSyncState(ctx, t.ID); syncErr == nil && syncState.GovernanceRequestID != uuid.Nil {
+		governanceRequestID = &syncState.GovernanceRequestID
 	}
 	idempotencyKey := plan.IdempotencyKey
 	if idempotencyKey == "" {
-		idempotencyKey = defaultExecutionIdempotencyKey(t.ID, reviewRequestID)
+		idempotencyKey = defaultExecutionIdempotencyKey(t.ID, governanceRequestID)
 	}
 
 	result, execErr := u.executor.Execute(ctx, connectordomain.ExecutionSpec{
@@ -1398,7 +1398,7 @@ func (u *Usecases) runTaskExecution(ctx context.Context, t domain.Task, plan dom
 		Payload:         plan.Payload,
 		IdempotencyKey:  idempotencyKey,
 		TaskID:          &t.ID,
-		ReviewRequestID: reviewRequestID,
+		GovernanceRequestID: governanceRequestID,
 	})
 	if execErr != nil {
 		result = connectordomain.ExecutionResult{
@@ -1414,20 +1414,20 @@ func (u *Usecases) runTaskExecution(ctx context.Context, t domain.Task, plan dom
 			Retryable:       true,
 			IdempotencyKey:  idempotencyKey,
 			TaskID:          &t.ID,
-			ReviewRequestID: reviewRequestID,
+			GovernanceRequestID: governanceRequestID,
 			CreatedAt:       time.Now().UTC(),
 		}
 	}
 	if result.CreatedAt.IsZero() {
 		result.CreatedAt = time.Now().UTC()
 	}
-	u.reportExecutionToReview(ctx, reviewRequestID, result)
+	u.reportExecutionToGovernance(ctx, governanceRequestID, result)
 
 	if _, insertErr := u.repo.InsertAction(ctx, domain.TaskAction{
 		TaskID:          t.ID,
 		ActionType:      TaskActionExecuteConnector,
 		Payload:         buildConnectorExecutionPayload(result),
-		ReviewRequestID: reviewRequestID,
+		GovernanceRequestID: governanceRequestID,
 		ErrorMessage:    result.ErrorMessage,
 	}); insertErr != nil {
 		slog.Warn("companion execute connector action failed", "task_id", t.ID.String(), "error", insertErr)
@@ -1451,7 +1451,7 @@ func (u *Usecases) runTaskExecution(ctx context.Context, t domain.Task, plan dom
 		TaskID:          t.ID,
 		ActionType:      TaskActionVerifyExecution,
 		Payload:         buildVerificationPayload(result, verification),
-		ReviewRequestID: reviewRequestID,
+		GovernanceRequestID: governanceRequestID,
 		ErrorMessage: func() string {
 			if verification.Status == domain.VerificationStatusFailed {
 				return verification.Summary
@@ -1501,7 +1501,7 @@ func (u *Usecases) runTaskExecution(ctx context.Context, t domain.Task, plan dom
 		}
 	}
 
-	t.ReviewStatus = normalizeReviewStatus(t.ReviewStatus)
+	t.GovernanceStatus = normalizeGovernanceStatus(t.GovernanceStatus)
 	out.Task = t
 	out.Plan = plan
 	out.Execution = result
@@ -1510,8 +1510,8 @@ func (u *Usecases) runTaskExecution(ctx context.Context, t domain.Task, plan dom
 	return out, nil
 }
 
-func (u *Usecases) reportExecutionToReview(ctx context.Context, reviewRequestID *uuid.UUID, result connectordomain.ExecutionResult) {
-	if u.governance == nil || reviewRequestID == nil || *reviewRequestID == uuid.Nil {
+func (u *Usecases) reportExecutionToGovernance(ctx context.Context, governanceRequestID *uuid.UUID, result connectordomain.ExecutionResult) {
+	if u.governance == nil || governanceRequestID == nil || *governanceRequestID == uuid.Nil {
 		return
 	}
 	success := result.Status == connectordomain.ExecSuccess
@@ -1533,10 +1533,10 @@ func (u *Usecases) reportExecutionToReview(ctx context.Context, reviewRequestID 
 	if len(result.EvidenceJSON) > 0 {
 		resultPayload["evidence"] = json.RawMessage(result.EvidenceJSON)
 	}
-	status, err := u.governance.ReportResult(ctx, reviewRequestID.String(), success, resultPayload, result.DurationMS, result.ErrorMessage)
+	status, err := u.governance.ReportResult(ctx, governanceRequestID.String(), success, resultPayload, result.DurationMS, result.ErrorMessage)
 	if err != nil || status >= http.StatusBadRequest {
-		slog.Warn("report execution to review failed",
-			"review_request_id", reviewRequestID.String(),
+		slog.Warn("report execution to governance failed",
+			"governance_request_id", governanceRequestID.String(),
 			"status", status,
 			"error", err)
 	}
@@ -1560,14 +1560,14 @@ func (u *Usecases) ExecuteTask(ctx context.Context, taskID uuid.UUID) (ExecuteTa
 		return out, err
 	}
 
-	var reviewRequestID string
+	var governanceRequestID string
 	if t.Status == domain.TaskStatusWaitingForApproval {
-		syncedTask, state, syncErr := u.syncTaskWithReview(ctx, t, "execute")
+		syncedTask, state, syncErr := u.syncTaskWithGovernance(ctx, t, "execute")
 		if state != nil {
-			syncedTask.ReviewStatus = state.LastReviewStatus
-			syncedTask.ReviewLastCheckedAt = &state.LastCheckedAt
-			syncedTask.ReviewSyncError = state.LastError
-			reviewRequestID = state.ReviewRequestID.String()
+			syncedTask.GovernanceStatus = state.LastGovernanceStatus
+			syncedTask.GovernanceLastCheckedAt = &state.LastCheckedAt
+			syncedTask.GovernanceSyncError = state.LastError
+			governanceRequestID = state.GovernanceRequestID.String()
 		}
 		if syncErr != nil {
 			return out, syncErr
@@ -1575,8 +1575,8 @@ func (u *Usecases) ExecuteTask(ctx context.Context, taskID uuid.UUID) (ExecuteTa
 		t = syncedTask
 	}
 
-	if !isApprovedReviewStatus(t.ReviewStatus) {
-		return out, u.reviewBlockedError(reviewRequestID, t.ReviewStatus, "execute")
+	if !isApprovedGovernanceStatus(t.GovernanceStatus) {
+		return out, u.governanceBlockedError(governanceRequestID, t.GovernanceStatus, "execute")
 	}
 	if t.Status != domain.TaskStatusWaitingForInput {
 		return out, ErrInvalidTaskState
@@ -1617,15 +1617,15 @@ func (u *Usecases) RetryTask(ctx context.Context, taskID uuid.UUID) (ExecuteTask
 		return out, ErrInvalidTaskState
 	}
 
-	snapshot, snapshotErr := u.refreshReviewSnapshot(ctx, taskID, "retry")
+	snapshot, snapshotErr := u.refreshGovernanceSnapshot(ctx, taskID, "retry")
 	if snapshotErr != nil {
 		return out, snapshotErr
 	}
-	t.ReviewStatus = snapshot.LastReviewStatus
-	t.ReviewLastCheckedAt = &snapshot.LastCheckedAt
-	t.ReviewSyncError = snapshot.LastError
-	if !isApprovedReviewStatus(snapshot.LastReviewStatus) {
-		return out, u.reviewBlockedError(snapshot.ReviewRequestID.String(), snapshot.LastReviewStatus, "retry")
+	t.GovernanceStatus = snapshot.LastGovernanceStatus
+	t.GovernanceLastCheckedAt = &snapshot.LastCheckedAt
+	t.GovernanceSyncError = snapshot.LastError
+	if !isApprovedGovernanceStatus(snapshot.LastGovernanceStatus) {
+		return out, u.governanceBlockedError(snapshot.GovernanceRequestID.String(), snapshot.LastGovernanceStatus, "retry")
 	}
 
 	payload := marshalOrEmpty("retry_execution_action", map[string]any{
@@ -1633,12 +1633,12 @@ func (u *Usecases) RetryTask(ctx context.Context, taskID uuid.UUID) (ExecuteTask
 		"last_execution_status": state.LastExecutionStatus,
 		"last_error":            state.LastError,
 	})
-	reviewRequestID := snapshot.ReviewRequestID
+	governanceRequestID := snapshot.GovernanceRequestID
 	if _, insertErr := u.repo.InsertAction(ctx, domain.TaskAction{
 		TaskID:          taskID,
 		ActionType:      TaskActionRetryExecution,
 		Payload:         payload,
-		ReviewRequestID: &reviewRequestID,
+		GovernanceRequestID: &governanceRequestID,
 	}); insertErr != nil {
 		slog.Warn("companion retry execution action failed", "task_id", taskID.String(), "error", insertErr)
 	}
@@ -1646,17 +1646,17 @@ func (u *Usecases) RetryTask(ctx context.Context, taskID uuid.UUID) (ExecuteTask
 	return u.runTaskExecution(ctx, t, plan, &state, evRetryExecution)
 }
 
-// SyncTaskReview consulta Review y aplica transición si el request ya resolvió (tareas en espera).
-func (u *Usecases) SyncTaskReview(ctx context.Context, taskID uuid.UUID) (domain.Task, error) {
+// SyncTaskGovernance consulta Governance y aplica transición si el request ya resolvió (tareas en espera).
+func (u *Usecases) SyncTaskGovernance(ctx context.Context, taskID uuid.UUID) (domain.Task, error) {
 	t, err := u.repo.GetTaskByID(ctx, taskID)
 	if err != nil {
 		return domain.Task{}, err
 	}
-	t, state, err := u.syncTaskWithReview(ctx, t, "manual")
+	t, state, err := u.syncTaskWithGovernance(ctx, t, "manual")
 	if state != nil {
-		t.ReviewStatus = state.LastReviewStatus
-		t.ReviewLastCheckedAt = &state.LastCheckedAt
-		t.ReviewSyncError = state.LastError
+		t.GovernanceStatus = state.LastGovernanceStatus
+		t.GovernanceLastCheckedAt = &state.LastCheckedAt
+		t.GovernanceSyncError = state.LastError
 	}
 	if err != nil {
 		return domain.Task{}, err
@@ -1664,31 +1664,31 @@ func (u *Usecases) SyncTaskReview(ctx context.Context, taskID uuid.UUID) (domain
 	return t, nil
 }
 
-// SyncPendingReviewTasks sincroniza un lote de tareas en waiting_for_approval.
-func (u *Usecases) SyncPendingReviewTasks(ctx context.Context, limit int) {
+// SyncPendingGovernanceTasks sincroniza un lote de tareas en waiting_for_approval.
+func (u *Usecases) SyncPendingGovernanceTasks(ctx context.Context, limit int) {
 	if limit <= 0 {
 		limit = 50
 	}
-	list, err := u.repo.ListTasksPendingReviewSync(ctx, time.Now().UTC(), limit)
+	list, err := u.repo.ListTasksPendingGovernanceSync(ctx, time.Now().UTC(), limit)
 	if err != nil {
 		slog.Error("companion sync list waiting tasks", "error", err)
 		return
 	}
 	for _, item := range list {
-		if _, _, sErr := u.syncTaskWithReview(ctx, item, "loop"); sErr != nil {
+		if _, _, sErr := u.syncTaskWithGovernance(ctx, item, "loop"); sErr != nil {
 			slog.Warn("companion sync task failed", "task_id", item.ID.String(), "error", sErr)
 		}
 	}
 }
 
-// RunReviewSyncLoop ejecuta SyncPendingReviewTasks periódicamente hasta que ctx termina.
-func (u *Usecases) RunReviewSyncLoop(ctx context.Context, interval time.Duration, batch int) {
+// RunGovernanceSyncLoop ejecuta SyncPendingGovernanceTasks periódicamente hasta que ctx termina.
+func (u *Usecases) RunGovernanceSyncLoop(ctx context.Context, interval time.Duration, batch int) {
 	if batch <= 0 {
 		return
 	}
-	worker.RunPeriodic(ctx, interval, "review-sync", func(c context.Context) {
+	worker.RunPeriodic(ctx, interval, "governance-sync", func(c context.Context) {
 		runCtx, cancel := context.WithTimeout(c, 2*time.Minute)
-		u.SyncPendingReviewTasks(runCtx, batch)
+		u.SyncPendingGovernanceTasks(runCtx, batch)
 		cancel()
 	})
 }
@@ -1703,22 +1703,22 @@ func IsInvalidTaskState(err error) bool {
 	return errors.Is(err, ErrInvalidTaskState)
 }
 
-// reviewBlockedError construye el error apropiado cuando una operación de
-// task se bloquea porque la review en Nexus no está aprobada.
+// governanceBlockedError construye el error apropiado cuando una operación de
+// task se bloquea porque la governance en Nexus no está aprobada.
 //
-// Cuando reviewGateEnforced=true, devuelve un *ReviewBlockedError con
-// detalle (review_request_id, status). El handler lo mapea a HTTP 412.
+// Cuando governanceGateEnforced=true, devuelve un *GovernanceBlockedError con
+// detalle (governance_request_id, status). El handler lo mapea a HTTP 412.
 //
-// Cuando reviewGateEnforced=false (default), devuelve ErrInvalidTaskState
+// Cuando governanceGateEnforced=false (default), devuelve ErrInvalidTaskState
 // para preservar el comportamiento legacy (HTTP 409). El gate sigue
 // bloqueando la ejecución; sólo cambia el shape del error que ve el caller.
-func (u *Usecases) reviewBlockedError(reviewRequestID, reviewStatus, reason string) error {
-	if !u.reviewGateEnforced {
+func (u *Usecases) governanceBlockedError(governanceRequestID, governanceStatus, reason string) error {
+	if !u.governanceGateEnforced {
 		return ErrInvalidTaskState
 	}
-	return &ReviewBlockedError{
-		ReviewRequestID: reviewRequestID,
-		ReviewStatus:    reviewStatus,
+	return &GovernanceBlockedError{
+		GovernanceRequestID: governanceRequestID,
+		GovernanceStatus:    governanceStatus,
 		Reason:          reason,
 	}
 }

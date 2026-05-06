@@ -11,7 +11,7 @@ import (
 	"github.com/devpablocristo/core/concurrency/go/worker"
 	"github.com/google/uuid"
 
-	"github.com/devpablocristo/core/governance/go/reviewclient"
+	"github.com/devpablocristo/core/governance/go/governanceclient"
 	domain "github.com/devpablocristo/companion/internal/watchers/usecases/domain"
 )
 
@@ -26,10 +26,10 @@ type PymesClient interface {
 	SendWhatsAppText(ctx context.Context, orgID, partyID, body string) error
 }
 
-// ReviewGateway port para enviar solicitudes a Nexus Review.
-type ReviewGateway interface {
-	SubmitRequest(ctx context.Context, idempotencyKey string, body reviewclient.SubmitRequestBody) (reviewclient.SubmitResponse, error)
-	GetRequest(ctx context.Context, id string) (reviewclient.RequestSummary, int, error)
+// GovernanceGateway port para enviar solicitudes a Nexus Governance.
+type GovernanceGateway interface {
+	SubmitRequest(ctx context.Context, idempotencyKey string, body governanceclient.SubmitRequestBody) (governanceclient.SubmitResponse, error)
+	GetRequest(ctx context.Context, id string) (governanceclient.RequestSummary, int, error)
 }
 
 // CreateWatcherInput es la entrada para crear un watcher.
@@ -59,13 +59,13 @@ type ChatNotifier interface {
 type Usecases struct {
 	repo     Repository
 	pymes    PymesClient
-	review   ReviewGateway
+	governance   GovernanceGateway
 	notifier ChatNotifier // nil = sin notificaciones al chat
 }
 
 // NewUsecases crea los usecases del módulo watchers.
-func NewUsecases(repo Repository, pymes PymesClient, review ReviewGateway) *Usecases {
-	return &Usecases{repo: repo, pymes: pymes, review: review}
+func NewUsecases(repo Repository, pymes PymesClient, governance GovernanceGateway) *Usecases {
+	return &Usecases{repo: repo, pymes: pymes, governance: governance}
 }
 
 // SetNotifier inyecta el notificador de chat. Opcional.
@@ -127,7 +127,7 @@ func (uc *Usecases) ListProposals(ctx context.Context, watcherID uuid.UUID, limi
 
 // --- Ejecución ---
 
-// actionTypeForWatcher mapea tipo de watcher a action_type de Review.
+// actionTypeForWatcher mapea tipo de watcher a action_type de Governance.
 func actionTypeForWatcher(wt domain.WatcherType) string {
 	switch wt {
 	case domain.WatcherStaleWorkOrders:
@@ -145,7 +145,7 @@ func actionTypeForWatcher(wt domain.WatcherType) string {
 	}
 }
 
-// RunWatcher ejecuta un watcher: consulta Pymes, crea propuestas, evalúa con Review, ejecuta si permite.
+// RunWatcher ejecuta un watcher: consulta Pymes, crea propuestas, evalúa con Governance, ejecuta si permite.
 func (uc *Usecases) RunWatcher(ctx context.Context, watcherID uuid.UUID) (*domain.WatcherResult, error) {
 	w, err := uc.repo.GetWatcher(ctx, watcherID)
 	if err != nil {
@@ -307,9 +307,9 @@ func (uc *Usecases) processItem(ctx context.Context, w domain.Watcher, item doma
 	}
 	proposal = created
 
-	// Consultar Review
+	// Consultar Governance
 	idempotencyKey := fmt.Sprintf("companion-watcher-%s-%s", w.ID, proposal.ID)
-	reviewResp, err := uc.review.SubmitRequest(ctx, idempotencyKey, reviewclient.SubmitRequestBody{
+	governanceResp, err := uc.governance.SubmitRequest(ctx, idempotencyKey, governanceclient.SubmitRequestBody{
 		RequesterType:  "service",
 		RequesterID:    "nexus_companion",
 		RequesterName:  "Nexus Companion Watcher",
@@ -319,28 +319,28 @@ func (uc *Usecases) processItem(ctx context.Context, w domain.Watcher, item doma
 		Reason:         proposal.Reason,
 	})
 	if err != nil {
-		slog.Error("watcher review submit failed", "proposal_id", proposal.ID, "error", err)
+		slog.Error("watcher governance submit failed", "proposal_id", proposal.ID, "error", err)
 		// Persistir el fallo en el proposal creado: si no, queda como pending
-		// con review_request_id NULL — invisible para SyncPendingProposals y
+		// con governance_request_id NULL — invisible para SyncPendingProposals y
 		// difícil de reconciliar a mano. Marcamos failed con reason para que
 		// un dashboard/listado muestre el orphan.
 		now := time.Now().UTC()
 		proposal.ExecutionStatus = domain.ProposalFailed
 		proposal.ResolvedAt = &now
-		proposal.ExecutionResult = marshalSyncErrorResult("submit_review_failed", err)
+		proposal.ExecutionResult = marshalSyncErrorResult("submit_governance_failed", err)
 		if upErr := uc.repo.UpdateProposal(ctx, proposal); upErr != nil {
 			slog.Error("watcher mark submit-failed proposal failed", "proposal_id", proposal.ID, "error", upErr)
 		}
-		return proposal, fmt.Errorf("submit review request: %w", err)
+		return proposal, fmt.Errorf("submit governance request: %w", err)
 	}
 
-	reviewID, _ := uuid.Parse(reviewResp.RequestID)
-	if reviewID != uuid.Nil {
-		proposal.ReviewRequestID = &reviewID
+	governanceID, _ := uuid.Parse(governanceResp.RequestID)
+	if governanceID != uuid.Nil {
+		proposal.GovernanceRequestID = &governanceID
 	}
 
-	decision := reviewResp.Decision
-	proposal.ReviewDecision = &decision
+	decision := governanceResp.Decision
+	proposal.GovernanceDecision = &decision
 
 	switch {
 	case decision == "allowed" || decision == "allow" || decision == "approved":
@@ -450,10 +450,10 @@ func (uc *Usecases) SyncPendingProposals(ctx context.Context, orgID string, limi
 		if i >= limit {
 			break
 		}
-		if p.ReviewRequestID == nil {
+		if p.GovernanceRequestID == nil {
 			continue
 		}
-		summary, statusCode, err := uc.review.GetRequest(ctx, p.ReviewRequestID.String())
+		summary, statusCode, err := uc.governance.GetRequest(ctx, p.GovernanceRequestID.String())
 		if err != nil || statusCode == 404 {
 			continue
 		}
@@ -463,7 +463,7 @@ func (uc *Usecases) SyncPendingProposals(ctx context.Context, orgID string, limi
 		}
 
 		decision := summary.Decision
-		p.ReviewDecision = &decision
+		p.GovernanceDecision = &decision
 		now := time.Now().UTC()
 		p.ResolvedAt = &now
 

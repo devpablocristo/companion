@@ -32,7 +32,7 @@ type ExecuteRequest struct {
 	Payload         json.RawMessage `json:"payload"`
 	IdempotencyKey  string          `json:"idempotency_key,omitempty"`
 	TaskID          string          `json:"task_id,omitempty"`
-	ReviewRequestID string          `json:"review_request_id,omitempty"`
+	GovernanceRequestID string          `json:"governance_request_id,omitempty"`
 }
 
 // ExecutionResponse resultado de una ejecución.

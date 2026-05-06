@@ -83,7 +83,7 @@ Companion no debe ser un agente monolítico. Debe componerse como un runtime con
 | Memory Store | Guardar memoria scoped por tenant, usuario, producto y dominio | No mezcla contexto entre tenants ni productos |
 | Governance Adapter | Crear requests en Nexus, sincronizar approvals, reportar resultados y evidencia | No reemplaza policies ni audit de Nexus |
 | Scheduler/Workers | Ejecutar syncs, watchers y reconciliaciones periódicas | No debe crear efectos secundarios sin contrato explícito |
-| Observability/Audit Trail | Registrar decisiones, tool calls, costos, latencia, errores y vínculos con review requests | No sustituye el audit canónico de Nexus |
+| Observability/Audit Trail | Registrar decisiones, tool calls, costos, latencia, errores y vínculos con governance requests | No sustituye el audit canónico de Nexus |
 
 Flujo conceptual:
 
@@ -138,7 +138,7 @@ Temporal u otro motor de workflows durables debe evaluarse cuando Companion nece
 | Core | Tipos y runtime reutilizables, contratos base, clientes compartidos, schemas comunes, primitives de memoria/evals/observabilidad cuando sean genéricas | Lógica específica de Companion, reglas de negocio de Pymes/Ponti, UI | Capability manifest types, governance client, tool schema types, eval harness |
 | Modules | Componentes UI reutilizables y publicados, bloques visuales compartidos, patrones de interacción comunes | Estado transaccional de producto, reglas de permisos, workflows específicos no reutilizables | ApprovalCard, InsightCard, TaskCard, ChatPanel si son compartidos por más de un producto |
 | Products | Verdad transaccional, reglas de dominio, APIs de dominio, validaciones propias, persistencia de negocio, compensaciones | Orquestación global de IA, policies cross-product, audit governance global | Pymes ventas/stock/caja; Ponti agro/insights; futuros productos |
-| Nexus Governance | Policies, approvals, delegations, evidence, audit/replay, decisión autorizativa para writes sensibles | Ejecución del write de negocio, UI principal de Companion, memoria conversacional | Crear review request, aprobar/rechazar, registrar evidencia, auditar decisión |
+| Nexus Governance | Policies, approvals, delegations, evidence, audit/replay, decisión autorizativa para writes sensibles | Ejecución del write de negocio, UI principal de Companion, memoria conversacional | Crear governance request, aprobar/rechazar, registrar evidencia, auditar decisión |
 
 ## Definición formal de capability
 
@@ -407,7 +407,7 @@ Riesgo: no poder explicar por qué una acción fue propuesta, aprobada o ejecuta
 Mitigación requerida:
 
 - Cada capability sensible debe declarar evidence fields.
-- Companion debe registrar trace de decisión y vínculo con review request.
+- Companion debe registrar trace de decisión y vínculo con governance request.
 - Nexus conserva evidence, audit y replay de decisiones.
 
 ### Prompt injection e input no confiable
@@ -517,7 +517,7 @@ Etapa 0 se considera completa cuando:
 Este ADR toma como señales de diseño documentación y material técnico sobre:
 
 - Model Context Protocol y diseño de tools/capabilities.
-- OpenAI Agents SDK: sessions, tracing, guardrails, tools y human review.
+- OpenAI Agents SDK: sessions, tracing, guardrails, tools y human governance approval.
 - Microsoft guidance sobre governance, seguridad, observabilidad e identidad de agentes.
 - Temporal para workflows durables y human-in-the-loop.
 - WorkOS y prácticas de identidad/autorización fina para agentes.

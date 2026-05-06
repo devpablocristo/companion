@@ -7,17 +7,17 @@ import (
 
 	"github.com/devpablocristo/core/concurrency/go/fsm"
 
-	"github.com/devpablocristo/core/governance/go/reviewclient"
+	"github.com/devpablocristo/core/governance/go/governanceclient"
 	domain "github.com/devpablocristo/companion/internal/tasks/usecases/domain"
 )
 
 // Eventos de transición de tarea (valores opacos para la FSM).
 const (
 	evInvestigate                   = "investigate"
-	evReviewPendingApproval         = "review_pending_approval"
-	evReviewResolvedAllow           = "review_resolved_allow"
-	evReviewResolvedAllowAwaitInput = "review_resolved_allow_await_input"
-	evReviewResolvedDeny            = "review_resolved_deny"
+	evGovernancePendingApproval         = "governance_pending_approval"
+	evGovernanceResolvedAllow           = "governance_resolved_allow"
+	evGovernanceResolvedAllowAwaitInput = "governance_resolved_allow_await_input"
+	evGovernanceResolvedDeny            = "governance_resolved_deny"
 	evStartExecution                = "start_execution"
 	evRetryExecution                = "retry_execution"
 	evExecutionSucceeded            = "execution_succeeded"
@@ -25,7 +25,7 @@ const (
 	evExecutionFailed               = "execution_failed"
 )
 
-func normalizeReviewStatus(status string) string {
+func normalizeGovernanceStatus(status string) string {
 	return strings.ToLower(strings.TrimSpace(status))
 }
 
@@ -36,19 +36,19 @@ func buildCompanionTaskFSM() *fsm.Machine[string, string] {
 		{From: domain.TaskStatusNew, Event: evInvestigate, To: domain.TaskStatusInvestigating},
 		{From: domain.TaskStatusInvestigating, Event: evInvestigate, To: domain.TaskStatusInvestigating},
 
-		{From: domain.TaskStatusNew, Event: evReviewPendingApproval, To: domain.TaskStatusWaitingForApproval},
-		{From: domain.TaskStatusInvestigating, Event: evReviewPendingApproval, To: domain.TaskStatusWaitingForApproval},
+		{From: domain.TaskStatusNew, Event: evGovernancePendingApproval, To: domain.TaskStatusWaitingForApproval},
+		{From: domain.TaskStatusInvestigating, Event: evGovernancePendingApproval, To: domain.TaskStatusWaitingForApproval},
 
-		{From: domain.TaskStatusNew, Event: evReviewResolvedAllow, To: domain.TaskStatusDone},
-		{From: domain.TaskStatusInvestigating, Event: evReviewResolvedAllow, To: domain.TaskStatusDone},
-		{From: domain.TaskStatusWaitingForApproval, Event: evReviewResolvedAllow, To: domain.TaskStatusDone},
-		{From: domain.TaskStatusNew, Event: evReviewResolvedAllowAwaitInput, To: domain.TaskStatusWaitingForInput},
-		{From: domain.TaskStatusInvestigating, Event: evReviewResolvedAllowAwaitInput, To: domain.TaskStatusWaitingForInput},
-		{From: domain.TaskStatusWaitingForApproval, Event: evReviewResolvedAllowAwaitInput, To: domain.TaskStatusWaitingForInput},
+		{From: domain.TaskStatusNew, Event: evGovernanceResolvedAllow, To: domain.TaskStatusDone},
+		{From: domain.TaskStatusInvestigating, Event: evGovernanceResolvedAllow, To: domain.TaskStatusDone},
+		{From: domain.TaskStatusWaitingForApproval, Event: evGovernanceResolvedAllow, To: domain.TaskStatusDone},
+		{From: domain.TaskStatusNew, Event: evGovernanceResolvedAllowAwaitInput, To: domain.TaskStatusWaitingForInput},
+		{From: domain.TaskStatusInvestigating, Event: evGovernanceResolvedAllowAwaitInput, To: domain.TaskStatusWaitingForInput},
+		{From: domain.TaskStatusWaitingForApproval, Event: evGovernanceResolvedAllowAwaitInput, To: domain.TaskStatusWaitingForInput},
 
-		{From: domain.TaskStatusNew, Event: evReviewResolvedDeny, To: domain.TaskStatusFailed},
-		{From: domain.TaskStatusInvestigating, Event: evReviewResolvedDeny, To: domain.TaskStatusFailed},
-		{From: domain.TaskStatusWaitingForApproval, Event: evReviewResolvedDeny, To: domain.TaskStatusFailed},
+		{From: domain.TaskStatusNew, Event: evGovernanceResolvedDeny, To: domain.TaskStatusFailed},
+		{From: domain.TaskStatusInvestigating, Event: evGovernanceResolvedDeny, To: domain.TaskStatusFailed},
+		{From: domain.TaskStatusWaitingForApproval, Event: evGovernanceResolvedDeny, To: domain.TaskStatusFailed},
 
 		{From: domain.TaskStatusWaitingForInput, Event: evStartExecution, To: domain.TaskStatusExecuting},
 		{From: domain.TaskStatusFailed, Event: evRetryExecution, To: domain.TaskStatusExecuting},
@@ -59,44 +59,44 @@ func buildCompanionTaskFSM() *fsm.Machine[string, string] {
 	})
 }
 
-func eventFromSubmitResponse(sub reviewclient.SubmitResponse) (string, error) {
+func eventFromSubmitResponse(sub governanceclient.SubmitResponse) (string, error) {
 	return eventFromSubmitResponseWithExecutionPlan(sub, false)
 }
 
-func eventFromSubmitResponseWithExecutionPlan(sub reviewclient.SubmitResponse, hasExecutionPlan bool) (string, error) {
-	s := normalizeReviewStatus(sub.Status)
+func eventFromSubmitResponseWithExecutionPlan(sub governanceclient.SubmitResponse, hasExecutionPlan bool) (string, error) {
+	s := normalizeGovernanceStatus(sub.Status)
 	switch s {
 	case "allowed", "approved", "executed":
 		if hasExecutionPlan {
-			return evReviewResolvedAllowAwaitInput, nil
+			return evGovernanceResolvedAllowAwaitInput, nil
 		}
-		return evReviewResolvedAllow, nil
+		return evGovernanceResolvedAllow, nil
 	case "denied", "rejected":
-		return evReviewResolvedDeny, nil
+		return evGovernanceResolvedDeny, nil
 	case "pending_approval":
-		return evReviewPendingApproval, nil
+		return evGovernancePendingApproval, nil
 	default:
-		return "", fmt.Errorf("unexpected review status after submit: %q", sub.Status)
+		return "", fmt.Errorf("unexpected governance status after submit: %q", sub.Status)
 	}
 }
 
-// eventFromReviewRequestStatus mapea estado HTTP de Review a evento FSM; apply=false = sin cambio.
-func eventFromReviewRequestStatus(status string) (event string, apply bool) {
-	return eventFromReviewRequestStatusWithExecutionPlan(status, false)
+// eventFromGovernanceRequestStatus mapea estado HTTP de Governance a evento FSM; apply=false = sin cambio.
+func eventFromGovernanceRequestStatus(status string) (event string, apply bool) {
+	return eventFromGovernanceRequestStatusWithExecutionPlan(status, false)
 }
 
-func eventFromReviewRequestStatusWithExecutionPlan(status string, hasExecutionPlan bool) (event string, apply bool) {
-	s := normalizeReviewStatus(status)
+func eventFromGovernanceRequestStatusWithExecutionPlan(status string, hasExecutionPlan bool) (event string, apply bool) {
+	s := normalizeGovernanceStatus(status)
 	switch s {
 	case "pending_approval", "pending", "evaluated":
 		return "", false
 	case "allowed", "approved", "executed":
 		if hasExecutionPlan {
-			return evReviewResolvedAllowAwaitInput, true
+			return evGovernanceResolvedAllowAwaitInput, true
 		}
-		return evReviewResolvedAllow, true
+		return evGovernanceResolvedAllow, true
 	case "denied", "rejected", "expired", "failed", "cancelled":
-		return evReviewResolvedDeny, true
+		return evGovernanceResolvedDeny, true
 	default:
 		return "", false
 	}

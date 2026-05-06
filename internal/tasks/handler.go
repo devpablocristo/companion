@@ -12,7 +12,7 @@ import (
 	"github.com/devpablocristo/core/http/go/httpjson"
 	"github.com/google/uuid"
 
-	"github.com/devpablocristo/core/governance/go/reviewclient"
+	"github.com/devpablocristo/core/governance/go/governanceclient"
 	tasksdto "github.com/devpablocristo/companion/internal/tasks/handler/dto"
 	domain "github.com/devpablocristo/companion/internal/tasks/usecases/domain"
 )
@@ -29,11 +29,11 @@ type taskUsecase interface {
 	GetDetail(ctx context.Context, id uuid.UUID) (TaskDetail, error)
 	AddMessage(ctx context.Context, taskID uuid.UUID, in AddMessageInput) (domain.TaskMessage, error)
 	Investigate(ctx context.Context, taskID uuid.UUID, in InvestigateInput) (domain.Task, error)
-	Propose(ctx context.Context, taskID uuid.UUID, in ProposeInput) (domain.Task, domain.TaskAction, reviewclient.SubmitResponse, error)
+	Propose(ctx context.Context, taskID uuid.UUID, in ProposeInput) (domain.Task, domain.TaskAction, governanceclient.SubmitResponse, error)
 	SetExecutionPlan(ctx context.Context, taskID uuid.UUID, in SetExecutionPlanInput) (domain.TaskExecutionPlan, error)
 	ExecuteTask(ctx context.Context, taskID uuid.UUID) (ExecuteTaskOutput, error)
 	RetryTask(ctx context.Context, taskID uuid.UUID) (ExecuteTaskOutput, error)
-	SyncTaskReview(ctx context.Context, taskID uuid.UUID) (domain.Task, error)
+	SyncTaskGovernance(ctx context.Context, taskID uuid.UUID) (domain.Task, error)
 	Chat(ctx context.Context, in ChatInput) (ChatResult, error)
 }
 
@@ -55,7 +55,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /v1/tasks/{id}/execution-plan", h.setExecutionPlan)
 	mux.HandleFunc("POST /v1/tasks/{id}/execute", h.execute)
 	mux.HandleFunc("POST /v1/tasks/{id}/retry", h.retry)
-	mux.HandleFunc("POST /v1/tasks/{id}/sync", h.syncReview)
+	mux.HandleFunc("POST /v1/tasks/{id}/sync", h.syncGovernance)
 	mux.HandleFunc("POST /v1/chat", h.chat)
 }
 
@@ -145,7 +145,7 @@ func (h *Handler) getByID(w http.ResponseWriter, r *http.Request) {
 		Messages:             make([]tasksdto.MessageResponse, 0, len(detail.Messages)),
 		Actions:              make([]tasksdto.ActionResponse, 0, len(detail.Actions)),
 		Artifacts:            make([]tasksdto.ArtifactResponse, 0, len(detail.Artifacts)),
-		LinkedReviewRequests: make([]tasksdto.LinkedReviewRequestResponse, 0, len(detail.LinkedReviewRequests)),
+		LinkedGovernanceRequests: make([]tasksdto.LinkedGovernanceRequestResponse, 0, len(detail.LinkedGovernanceRequests)),
 	}
 	for _, m := range detail.Messages {
 		resp.Messages = append(resp.Messages, tasksdto.MessageToResponse(m))
@@ -156,14 +156,14 @@ func (h *Handler) getByID(w http.ResponseWriter, r *http.Request) {
 	for _, ar := range detail.Artifacts {
 		resp.Artifacts = append(resp.Artifacts, tasksdto.ArtifactToResponse(ar))
 	}
-	for _, lr := range detail.LinkedReviewRequests {
-		resp.LinkedReviewRequests = append(resp.LinkedReviewRequests, tasksdto.LinkedReviewRequestResponse{
+	for _, lr := range detail.LinkedGovernanceRequests {
+		resp.LinkedGovernanceRequests = append(resp.LinkedGovernanceRequests, tasksdto.LinkedGovernanceRequestResponse{
 			ActionID: lr.ActionID.String(),
 			Request:  lr.Request,
 		})
 	}
-	if detail.ReviewSync != nil {
-		resp.ReviewSync = tasksdto.ReviewSyncToResponse(*detail.ReviewSync)
+	if detail.GovernanceSync != nil {
+		resp.GovernanceSync = tasksdto.GovernanceSyncToResponse(*detail.GovernanceSync)
 	}
 	if detail.ExecutionPlan != nil {
 		resp.ExecutionPlan = tasksdto.ExecutionPlanToResponse(*detail.ExecutionPlan)
@@ -275,10 +275,10 @@ func (h *Handler) propose(w http.ResponseWriter, r *http.Request) {
 			httpjson.WriteFlatError(w, http.StatusConflict, "CONFLICT", "invalid task state")
 			return
 		}
-		if errors.Is(err, ErrReviewSubmit) && t.ID != uuid.Nil {
+		if errors.Is(err, ErrGovernanceSubmit) && t.ID != uuid.Nil {
 			httpjson.WriteJSON(w, http.StatusBadGateway, map[string]any{
-				"code":    "REVIEW_SUBMIT_FAILED",
-				"message": "review request failed",
+				"code":    "GOVERNANCE_SUBMIT_FAILED",
+				"message": "governance request failed",
 				"task":    tasksdto.TaskToResponse(t),
 				"action":  tasksdto.ActionToResponse(action),
 			})
@@ -290,15 +290,15 @@ func (h *Handler) propose(w http.ResponseWriter, r *http.Request) {
 	var pr tasksdto.ProposeResponse
 	pr.Task = tasksdto.TaskToResponse(t)
 	pr.Action = tasksdto.ActionToResponse(action)
-	pr.ReviewSubmit.RequestID = sub.RequestID
-	pr.ReviewSubmit.Decision = sub.Decision
-	pr.ReviewSubmit.Status = sub.Status
-	pr.ReviewSubmit.RiskLevel = sub.RiskLevel
-	pr.ReviewSubmit.DecisionReason = sub.DecisionReason
+	pr.GovernanceSubmit.RequestID = sub.RequestID
+	pr.GovernanceSubmit.Decision = sub.Decision
+	pr.GovernanceSubmit.Status = sub.Status
+	pr.GovernanceSubmit.RiskLevel = sub.RiskLevel
+	pr.GovernanceSubmit.DecisionReason = sub.DecisionReason
 	httpjson.WriteJSON(w, http.StatusOK, pr)
 }
 
-func (h *Handler) syncReview(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) syncGovernance(w http.ResponseWriter, r *http.Request) {
 	if !requireScope(w, r, scopeCompanionTasksWrite) {
 		return
 	}
@@ -310,7 +310,7 @@ func (h *Handler) syncReview(w http.ResponseWriter, r *http.Request) {
 	if !h.authorizeTaskOrg(w, r, id) {
 		return
 	}
-	t, err := h.uc.SyncTaskReview(r.Context(), id)
+	t, err := h.uc.SyncTaskGovernance(r.Context(), id)
 	if err != nil {
 		if IsNotFound(err) {
 			httpjson.WriteFlatError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
@@ -386,7 +386,7 @@ func (h *Handler) execute(w http.ResponseWriter, r *http.Request) {
 			httpjson.WriteFlatError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
 			return
 		}
-		if writeReviewBlocked(w, err) {
+		if writeGovernanceBlocked(w, err) {
 			return
 		}
 		if IsInvalidTaskState(err) {
@@ -425,7 +425,7 @@ func (h *Handler) retry(w http.ResponseWriter, r *http.Request) {
 			httpjson.WriteFlatError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
 			return
 		}
-		if writeReviewBlocked(w, err) {
+		if writeGovernanceBlocked(w, err) {
 			return
 		}
 		if IsInvalidTaskState(err) {
@@ -521,20 +521,20 @@ func (h *Handler) authorizeTaskOrg(w http.ResponseWriter, r *http.Request, id uu
 	return true
 }
 
-// writeReviewBlocked detecta el typed error ErrReviewNotApproved y escribe
-// HTTP 412 (precondition_failed) con review_request_id y review_status en el
+// writeGovernanceBlocked detecta el typed error ErrGovernanceNotApproved y escribe
+// HTTP 412 (precondition_failed) con governance_request_id y governance_status en el
 // body para que el caller pueda actuar (esperar, refrescar, escalar).
 // Devuelve true si manejó el error.
-func writeReviewBlocked(w http.ResponseWriter, err error) bool {
-	blocked, ok := AsReviewBlocked(err)
+func writeGovernanceBlocked(w http.ResponseWriter, err error) bool {
+	blocked, ok := AsGovernanceBlocked(err)
 	if !ok {
 		return false
 	}
 	httpjson.WriteJSON(w, http.StatusPreconditionFailed, map[string]any{
-		"code":              "REVIEW_NOT_APPROVED",
-		"message":           "execution requires the linked review to be approved",
-		"review_request_id": blocked.ReviewRequestID,
-		"review_status":     blocked.ReviewStatus,
+		"code":              "GOVERNANCE_NOT_APPROVED",
+		"message":           "execution requires the linked governance to be approved",
+		"governance_request_id": blocked.GovernanceRequestID,
+		"governance_status":     blocked.GovernanceStatus,
 		"reason":            blocked.Reason,
 	})
 	return true

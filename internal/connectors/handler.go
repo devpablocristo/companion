@@ -189,17 +189,17 @@ func (h *Handler) execute(w http.ResponseWriter, r *http.Request) {
 			spec.TaskID = &tid
 		}
 	}
-	if body.ReviewRequestID != "" {
-		rid, err := uuid.Parse(body.ReviewRequestID)
+	if body.GovernanceRequestID != "" {
+		rid, err := uuid.Parse(body.GovernanceRequestID)
 		if err == nil {
-			spec.ReviewRequestID = &rid
+			spec.GovernanceRequestID = &rid
 		}
 	}
 
 	result, err := h.uc.Execute(r.Context(), spec)
 	if err != nil {
 		if IsUngated(err) {
-			httpjson.WriteFlatError(w, http.StatusForbidden, "UNGATED", "execution requires review approval")
+			httpjson.WriteFlatError(w, http.StatusForbidden, "UNGATED", "execution requires governance approval")
 			return
 		}
 		if IsNotFound(err) {

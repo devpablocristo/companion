@@ -33,7 +33,7 @@ func (p *PymesConnector) Capabilities() []domain.Capability {
 			Mode:           domain.CapabilityModeWrite,
 			SideEffect:     true,
 			RiskClass:      "medium",
-			RequiresReview: true,
+			RequiresGovernance: true,
 			RequiredScopes: []string{"companion:connectors:execute"},
 			InputSchema: map[string]any{
 				"type":     "object",
@@ -46,7 +46,7 @@ func (p *PymesConnector) Capabilities() []domain.Capability {
 			Mode:           domain.CapabilityModeWrite,
 			SideEffect:     true,
 			RiskClass:      "medium",
-			RequiresReview: true,
+			RequiresGovernance: true,
 			RequiredScopes: []string{"companion:connectors:execute"},
 			InputSchema: map[string]any{
 				"type":     "object",
@@ -197,7 +197,7 @@ func (p *PymesConnector) Execute(ctx context.Context, spec domain.ExecutionSpec)
 		DurationMS:      duration,
 		IdempotencyKey:  spec.IdempotencyKey,
 		TaskID:          spec.TaskID,
-		ReviewRequestID: spec.ReviewRequestID,
+		GovernanceRequestID: spec.GovernanceRequestID,
 		CreatedAt:       time.Now().UTC(),
 	}, nil
 }

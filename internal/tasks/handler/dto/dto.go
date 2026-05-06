@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/devpablocristo/core/governance/go/reviewclient"
+	"github.com/devpablocristo/core/governance/go/governanceclient"
 	connectordomain "github.com/devpablocristo/companion/internal/connectors/usecases/domain"
 	domain "github.com/devpablocristo/companion/internal/tasks/usecases/domain"
 )
@@ -32,9 +32,9 @@ type TaskResponse struct {
 	Channel             string          `json:"channel"`
 	Summary             string          `json:"summary"`
 	ContextJSON         json.RawMessage `json:"context_json"`
-	ReviewStatus        string          `json:"review_status,omitempty"`
-	ReviewLastCheckedAt *string         `json:"review_last_checked_at,omitempty"`
-	ReviewSyncError     string          `json:"review_sync_error,omitempty"`
+	GovernanceStatus        string          `json:"governance_status,omitempty"`
+	GovernanceLastCheckedAt *string         `json:"governance_last_checked_at,omitempty"`
+	GovernanceSyncError     string          `json:"governance_sync_error,omitempty"`
 	CreatedAt           string          `json:"created_at"`
 	UpdatedAt           string          `json:"updated_at"`
 	ClosedAt            *string         `json:"closed_at,omitempty"`
@@ -53,7 +53,7 @@ type ActionResponse struct {
 	ID              string          `json:"id"`
 	ActionType      string          `json:"action_type"`
 	Payload         json.RawMessage `json:"payload,omitempty"`
-	ReviewRequestID *string         `json:"review_request_id,omitempty"`
+	GovernanceRequestID *string         `json:"governance_request_id,omitempty"`
 	ErrorMessage    string          `json:"error_message,omitempty"`
 	CreatedAt       string          `json:"created_at"`
 }
@@ -66,15 +66,15 @@ type ArtifactResponse struct {
 	CreatedAt string          `json:"created_at"`
 }
 
-type LinkedReviewRequestResponse struct {
+type LinkedGovernanceRequestResponse struct {
 	ActionID string                       `json:"action_id"`
-	Request  *reviewclient.RequestSummary `json:"request,omitempty"`
+	Request  *governanceclient.RequestSummary `json:"request,omitempty"`
 }
 
-type ReviewSyncStateResponse struct {
-	ReviewRequestID      string `json:"review_request_id"`
-	LastReviewStatus     string `json:"last_review_status,omitempty"`
-	LastReviewHTTPStatus int    `json:"last_review_http_status"`
+type GovernanceSyncStateResponse struct {
+	GovernanceRequestID      string `json:"governance_request_id"`
+	LastGovernanceStatus     string `json:"last_governance_status,omitempty"`
+	LastGovernanceHTTPStatus int    `json:"last_governance_http_status"`
 	LastCheckedAt        string `json:"last_checked_at"`
 	LastError            string `json:"last_error,omitempty"`
 	ConsecutiveFailures  int    `json:"consecutive_failures"`
@@ -112,8 +112,8 @@ type TaskDetailResponse struct {
 	Messages             []MessageResponse             `json:"messages"`
 	Actions              []ActionResponse              `json:"actions"`
 	Artifacts            []ArtifactResponse            `json:"artifacts"`
-	LinkedReviewRequests []LinkedReviewRequestResponse `json:"linked_review_requests"`
-	ReviewSync           *ReviewSyncStateResponse      `json:"review_sync,omitempty"`
+	LinkedGovernanceRequests []LinkedGovernanceRequestResponse `json:"linked_governance_requests"`
+	GovernanceSync           *GovernanceSyncStateResponse      `json:"governance_sync,omitempty"`
 	ExecutionPlan        *TaskExecutionPlanResponse    `json:"execution_plan,omitempty"`
 	ExecutionState       *TaskExecutionStateResponse   `json:"execution_state,omitempty"`
 }
@@ -152,13 +152,13 @@ type ProposeRequest struct {
 type ProposeResponse struct {
 	Task         TaskResponse   `json:"task"`
 	Action       ActionResponse `json:"action"`
-	ReviewSubmit struct {
+	GovernanceSubmit struct {
 		RequestID      string `json:"request_id"`
 		Decision       string `json:"decision"`
 		Status         string `json:"status"`
 		RiskLevel      string `json:"risk_level"`
 		DecisionReason string `json:"decision_reason"`
-	} `json:"review_submit"`
+	} `json:"governance_submit"`
 }
 
 type SetExecutionPlanRequest struct {
@@ -190,20 +190,20 @@ type ExecutionResultResponse struct {
 	Retryable       bool            `json:"retryable"`
 	DurationMS      int64           `json:"duration_ms"`
 	IdempotencyKey  string          `json:"idempotency_key,omitempty"`
-	ReviewRequestID *string         `json:"review_request_id,omitempty"`
+	GovernanceRequestID *string         `json:"governance_request_id,omitempty"`
 	CreatedAt       string          `json:"created_at"`
 }
 
 func TaskToResponse(t domain.Task) TaskResponse {
 	var closed *string
-	var reviewLastChecked *string
+	var governanceLastChecked *string
 	if t.ClosedAt != nil {
 		s := t.ClosedAt.UTC().Format(time.RFC3339)
 		closed = &s
 	}
-	if t.ReviewLastCheckedAt != nil {
-		s := t.ReviewLastCheckedAt.UTC().Format(time.RFC3339)
-		reviewLastChecked = &s
+	if t.GovernanceLastCheckedAt != nil {
+		s := t.GovernanceLastCheckedAt.UTC().Format(time.RFC3339)
+		governanceLastChecked = &s
 	}
 	return TaskResponse{
 		ID:                  t.ID.String(),
@@ -217,9 +217,9 @@ func TaskToResponse(t domain.Task) TaskResponse {
 		Channel:             t.Channel,
 		Summary:             t.Summary,
 		ContextJSON:         t.ContextJSON,
-		ReviewStatus:        t.ReviewStatus,
-		ReviewLastCheckedAt: reviewLastChecked,
-		ReviewSyncError:     t.ReviewSyncError,
+		GovernanceStatus:        t.GovernanceStatus,
+		GovernanceLastCheckedAt: governanceLastChecked,
+		GovernanceSyncError:     t.GovernanceSyncError,
 		CreatedAt:           t.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:           t.UpdatedAt.UTC().Format(time.RFC3339),
 		ClosedAt:            closed,
@@ -239,15 +239,15 @@ func MessageToResponse(m domain.TaskMessage) MessageResponse {
 
 func ActionToResponse(a domain.TaskAction) ActionResponse {
 	var rid *string
-	if a.ReviewRequestID != nil {
-		s := a.ReviewRequestID.String()
+	if a.GovernanceRequestID != nil {
+		s := a.GovernanceRequestID.String()
 		rid = &s
 	}
 	return ActionResponse{
 		ID:              a.ID.String(),
 		ActionType:      a.ActionType,
 		Payload:         a.Payload,
-		ReviewRequestID: rid,
+		GovernanceRequestID: rid,
 		ErrorMessage:    a.ErrorMessage,
 		CreatedAt:       a.CreatedAt.UTC().Format(time.RFC3339),
 	}
@@ -263,11 +263,11 @@ func ArtifactToResponse(a domain.TaskArtifact) ArtifactResponse {
 	}
 }
 
-func ReviewSyncToResponse(s domain.TaskReviewSyncState) *ReviewSyncStateResponse {
-	return &ReviewSyncStateResponse{
-		ReviewRequestID:      s.ReviewRequestID.String(),
-		LastReviewStatus:     s.LastReviewStatus,
-		LastReviewHTTPStatus: s.LastReviewHTTPStatus,
+func GovernanceSyncToResponse(s domain.TaskGovernanceSyncState) *GovernanceSyncStateResponse {
+	return &GovernanceSyncStateResponse{
+		GovernanceRequestID:      s.GovernanceRequestID.String(),
+		LastGovernanceStatus:     s.LastGovernanceStatus,
+		LastGovernanceHTTPStatus: s.LastGovernanceHTTPStatus,
 		LastCheckedAt:        s.LastCheckedAt.UTC().Format(time.RFC3339),
 		LastError:            s.LastError,
 		ConsecutiveFailures:  s.ConsecutiveFailures,
@@ -308,10 +308,10 @@ func ExecutionStateToResponse(state domain.TaskExecutionState) *TaskExecutionSta
 }
 
 func ExecutionResultToResponse(result connectordomain.ExecutionResult) ExecutionResultResponse {
-	var reviewRequestID *string
-	if result.ReviewRequestID != nil {
-		s := result.ReviewRequestID.String()
-		reviewRequestID = &s
+	var governanceRequestID *string
+	if result.GovernanceRequestID != nil {
+		s := result.GovernanceRequestID.String()
+		governanceRequestID = &s
 	}
 	return ExecutionResultResponse{
 		ID:              result.ID.String(),
@@ -328,7 +328,7 @@ func ExecutionResultToResponse(result connectordomain.ExecutionResult) Execution
 		Retryable:       result.Retryable,
 		DurationMS:      result.DurationMS,
 		IdempotencyKey:  result.IdempotencyKey,
-		ReviewRequestID: reviewRequestID,
+		GovernanceRequestID: governanceRequestID,
 		CreatedAt:       result.CreatedAt.UTC().Format(time.RFC3339),
 	}
 }

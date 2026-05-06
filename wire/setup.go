@@ -66,12 +66,12 @@ func watcherInterval() time.Duration {
 	return envconfig.Duration("COMPANION_WATCHER_INTERVAL_SEC", 0)
 }
 
-// reviewGateEnforced lee el feature flag que activa el typed error
-// ErrReviewNotApproved (HTTP 412) en path de tasks. Default false: el caller
+// governanceGateEnforced lee el feature flag que activa el typed error
+// ErrGovernanceNotApproved (HTTP 412) en path de tasks. Default false: el caller
 // recibe ErrInvalidTaskState (HTTP 409) como antes. Activar a true en staging
 // y producción una vez verificado el comportamiento.
-func reviewGateEnforced() bool {
-	return envconfig.Bool("COMPANION_REVIEW_GATE_ENFORCED", false)
+func governanceGateEnforced() bool {
+	return envconfig.Bool("COMPANION_GOVERNANCE_GATE_ENFORCED", false)
 }
 
 // defaultAutonomyLevel lee el nivel de autonomía base del runtime desde env
@@ -135,16 +135,16 @@ func NewServer(cfg Config) (http.Handler, func(), error) {
 		connReg.Register(registry.NewPontiConnector(pontiClient))
 	}
 	connRepo := connectors.NewPostgresRepository(db)
-	reviewChecker := connectors.NewReviewCheckerAdapter(func(c context.Context, id uuid.UUID) (string, string, int, error) {
+	governanceChecker := connectors.NewGovernanceCheckerAdapter(func(c context.Context, id uuid.UUID) (string, string, int, error) {
 		return governanceGateway.GetRequestMeta(c, id.String())
 	})
-	connUC := connectors.NewUsecases(connRepo, connReg, reviewChecker)
+	connUC := connectors.NewUsecases(connRepo, connReg, governanceChecker)
 	connHandler := connectors.NewHandler(connUC)
 
 	repo := tasks.NewPostgresRepository(db)
 	uc := tasks.NewUsecases(repo, governanceGateway)
-	uc.SetReviewSyncInterval(governanceSyncInterval())
-	uc.SetReviewGateEnforced(reviewGateEnforced())
+	uc.SetGovernanceSyncInterval(governanceSyncInterval())
+	uc.SetGovernanceGateEnforced(governanceGateEnforced())
 	uc.SetExecutor(connUC)
 	h := tasks.NewHandler(uc)
 
@@ -163,7 +163,7 @@ func NewServer(cfg Config) (http.Handler, func(), error) {
 	llmProvider := runtime.NewProvider(cfg.LLMProvider, cfg.LLMAPIKey, cfg.LLMModel)
 	toolkit := runtime.NewToolKit(rc, memUC, watcherUC)
 	contextPorts := runtime.ContextPorts{
-		ReviewClient: rc,
+		GovernanceClient: rc,
 		MemoryFind: func(c context.Context, st memdomain.ScopeType, sid string, k memdomain.MemoryKind, limit int) ([]memdomain.MemoryEntry, error) {
 			return memUC.Find(c, memory.FindQuery{ScopeType: st, ScopeID: sid, Kind: k, Limit: limit})
 		},
@@ -210,7 +210,7 @@ func NewServer(cfg Config) (http.Handler, func(), error) {
 	}
 	if d := governanceSyncInterval(); d > 0 {
 		syncCtx, syncCancel := context.WithCancel(context.Background())
-		go uc.RunReviewSyncLoop(syncCtx, d, 50)
+		go uc.RunGovernanceSyncLoop(syncCtx, d, 50)
 		prev := cleanup
 		cleanup = func() {
 			syncCancel()

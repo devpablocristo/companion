@@ -12,7 +12,7 @@ import {
   investigateCompanionTask,
   saveCompanionTaskExecutionPlan,
   saveCompanionMemory,
-  syncCompanionTaskFromReview,
+  syncCompanionTaskFromGovernance,
 } from '../api'
 import { t } from '../i18n'
 
@@ -20,9 +20,9 @@ type TaskRow = {
   id: string
   title: string
   status: string
-  review_status?: string
-  review_last_checked_at?: string
-  review_sync_error?: string
+  governance_status?: string
+  governance_last_checked_at?: string
+  governance_sync_error?: string
   updated_at: string
 }
 
@@ -32,9 +32,9 @@ type TaskSnapshot = {
   goal: string
   status: string
   created_by?: string
-  review_status?: string
-  review_last_checked_at?: string
-  review_sync_error?: string
+  governance_status?: string
+  governance_last_checked_at?: string
+  governance_sync_error?: string
 }
 
 type TaskMessage = {
@@ -48,12 +48,12 @@ type TaskMessage = {
 type TaskAction = {
   id: string
   action_type?: string
-  review_request_id?: string
+  governance_request_id?: string
   error_message?: string
   created_at: string
 }
 
-type LinkedReviewRequest = {
+type LinkedGovernanceRequest = {
   action_id: string
   request?: {
     id?: string
@@ -63,10 +63,10 @@ type LinkedReviewRequest = {
   }
 }
 
-type ReviewSyncState = {
-  review_request_id: string
-  last_review_status?: string
-  last_review_http_status: number
+type GovernanceSyncState = {
+  governance_request_id: string
+  last_governance_status?: string
+  last_governance_http_status: number
   last_checked_at: string
   last_error?: string
   consecutive_failures: number
@@ -145,8 +145,8 @@ type TaskDetail = {
   messages: TaskMessage[]
   actions: TaskAction[]
   artifacts: Artifact[]
-  linked_review_requests: LinkedReviewRequest[]
-  review_sync?: ReviewSyncState
+  linked_governance_requests: LinkedGovernanceRequest[]
+  governance_sync?: GovernanceSyncState
   execution_plan?: ExecutionPlan
   execution_state?: ExecutionState
 }
@@ -172,7 +172,7 @@ function formatStatus(status?: string | null) {
   return status.split('_').join(' ')
 }
 
-function toneForStatus(status?: string | null, kind: 'task' | 'review' = 'task') {
+function toneForStatus(status?: string | null, kind: 'task' | 'governance' = 'task') {
   switch (status) {
     case 'done':
     case 'allowed':
@@ -210,7 +210,7 @@ function StatusPill({
   kind = 'task',
 }: {
   status?: string | null
-  kind?: 'task' | 'review'
+  kind?: 'task' | 'governance'
 }) {
   if (!status) return null
   return (
@@ -400,12 +400,12 @@ export default function Tasks({
       .finally(() => refreshTaskView(taskID).finally(() => setBusy(false)))
   }
 
-  const syncFromReview = () => {
+  const syncFromGovernance = () => {
     if (!detail?.task?.id) return
     const taskID = detail.task.id
     setBusy(true)
     setMsg(null)
-    syncCompanionTaskFromReview(taskID)
+    syncCompanionTaskFromGovernance(taskID)
       .catch((e: Error) => setMsg({ type: 'err', text: e.message }))
       .finally(() => refreshTaskView(taskID).finally(() => setBusy(false)))
   }
@@ -491,7 +491,7 @@ export default function Tasks({
       })
     }
     for (const a of detail.actions || []) {
-      const rid = a.review_request_id ? ` → ${a.review_request_id}` : ''
+      const rid = a.governance_request_id ? ` → ${a.governance_request_id}` : ''
       const err = a.error_message ? ` (${a.error_message})` : ''
       rows.push({
         kind: 'action',
@@ -508,9 +508,9 @@ export default function Tasks({
   const availableCapabilities =
     capabilities.find((item) => item.kind === selectedConnector?.kind)?.capabilities || []
   const approvedForExecution =
-    detail?.task.review_status === 'approved' ||
-    detail?.task.review_status === 'allowed' ||
-    detail?.task.review_status === 'executed'
+    detail?.task.governance_status === 'approved' ||
+    detail?.task.governance_status === 'allowed' ||
+    detail?.task.governance_status === 'executed'
   const canInvestigate =
     detail?.task.status === 'new' || detail?.task.status === 'investigating'
   const canPropose =
@@ -528,9 +528,9 @@ export default function Tasks({
     Boolean(approvedForExecution) &&
     detail?.task.status === 'failed' &&
     Boolean(detail?.execution_state?.retryable)
-  const primaryReviewRequestId =
-    detail?.review_sync?.review_request_id ||
-    detail?.linked_review_requests?.find((item) => item.request?.id)?.request?.id
+  const primaryGovernanceRequestId =
+    detail?.governance_sync?.governance_request_id ||
+    detail?.linked_governance_requests?.find((item) => item.request?.id)?.request?.id
   const summaryEntry = memoryEntries.find((entry) => entry.kind === 'task_summary')
   const factsEntry = memoryEntries.find((entry) => entry.kind === 'task_facts')
   const filteredList = list.filter((row) => {
@@ -651,15 +651,15 @@ export default function Tasks({
                 <div className="font-medium">{row.title}</div>
                 <div className="mt-1 flex flex-wrap items-center gap-2">
                   <StatusPill status={row.status} />
-                  <StatusPill status={row.review_status} kind="review" />
+                  <StatusPill status={row.governance_status} kind="governance" />
                 </div>
                 <div className="mt-2 text-xs text-gray-500">
-                  {t(lang, 'lastChecked')}: {formatDateTime(row.review_last_checked_at)} ·{' '}
+                  {t(lang, 'lastChecked')}: {formatDateTime(row.governance_last_checked_at)} ·{' '}
                   {formatDateTime(row.updated_at)}
                 </div>
-                {row.review_sync_error && (
+                {row.governance_sync_error && (
                   <div className="mt-1 text-xs text-rose-300">
-                    {t(lang, 'syncError')}: {row.review_sync_error}
+                    {t(lang, 'syncError')}: {row.governance_sync_error}
                   </div>
                 )}
               </button>
@@ -691,13 +691,13 @@ export default function Tasks({
                   <h3 className="text-lg font-semibold text-white mb-2">{detail.task.title}</h3>
                   <div className="flex flex-wrap items-center gap-2">
                     <StatusPill status={detail.task.status} />
-                    <StatusPill status={detail.task.review_status} kind="review" />
+                    <StatusPill status={detail.task.governance_status} kind="governance" />
                   </div>
                 </div>
-                {primaryReviewRequestId && (
+                {primaryGovernanceRequestId && (
                   <button
                     type="button"
-                    onClick={() => onViewReplay(primaryReviewRequestId)}
+                    onClick={() => onViewReplay(primaryGovernanceRequestId)}
                     className="px-3 py-1.5 rounded bg-indigo-900 text-sm text-indigo-200 hover:bg-indigo-800"
                   >
                     {t(lang, 'openReplay')}
@@ -707,10 +707,10 @@ export default function Tasks({
                   <button
                     type="button"
                     disabled={busy}
-                    onClick={syncFromReview}
+                    onClick={syncFromGovernance}
                     className="px-3 py-1.5 rounded bg-teal-800 text-sm text-white hover:bg-teal-700 disabled:opacity-50"
                   >
-                    {t(lang, 'syncFromReview')}
+                    {t(lang, 'syncFromGovernance')}
                   </button>
                 )}
                 {canExecute && (
@@ -740,8 +740,8 @@ export default function Tasks({
                   <dd className="text-gray-200">{formatStatus(detail.task.status)}</dd>
                 </div>
                 <div>
-                  <dt className="text-gray-500">{t(lang, 'reviewStatus')}</dt>
-                  <dd className="text-gray-200">{formatStatus(detail.task.review_status)}</dd>
+                  <dt className="text-gray-500">{t(lang, 'governanceStatus')}</dt>
+                  <dd className="text-gray-200">{formatStatus(detail.task.governance_status)}</dd>
                 </div>
                 <div>
                   <dt className="text-gray-500">{t(lang, 'taskCreatedBy')}</dt>
@@ -749,22 +749,22 @@ export default function Tasks({
                 </div>
                 <div>
                   <dt className="text-gray-500">{t(lang, 'lastChecked')}</dt>
-                  <dd className="text-gray-200">{formatDateTime(detail.task.review_last_checked_at)}</dd>
+                  <dd className="text-gray-200">{formatDateTime(detail.task.governance_last_checked_at)}</dd>
                 </div>
                 <div className="sm:col-span-2">
-                  <dt className="text-gray-500">{t(lang, 'reviewRequestId')}</dt>
+                  <dt className="text-gray-500">{t(lang, 'governanceRequestId')}</dt>
                   <dd className="text-gray-200 font-mono text-xs break-all">
-                    {detail.review_sync?.review_request_id || '—'}
+                    {detail.governance_sync?.governance_request_id || '—'}
                   </dd>
                 </div>
                 <div className="sm:col-span-2">
                   <dt className="text-gray-500">{t(lang, 'taskGoal')}</dt>
                   <dd className="text-gray-200">{detail.task.goal || '—'}</dd>
                 </div>
-                {detail.task.review_sync_error && (
+                {detail.task.governance_sync_error && (
                   <div className="sm:col-span-2">
                     <dt className="text-gray-500">{t(lang, 'syncError')}</dt>
-                    <dd className="text-rose-300">{detail.task.review_sync_error}</dd>
+                    <dd className="text-rose-300">{detail.task.governance_sync_error}</dd>
                   </div>
                 )}
                 {detail.execution_state && (
@@ -803,7 +803,7 @@ export default function Tasks({
                   onClick={propose}
                   className="px-3 py-1.5 rounded bg-amber-700 text-sm text-white hover:bg-amber-600 disabled:opacity-50"
                 >
-                  {busy ? t(lang, 'proposeRunning') : t(lang, 'proposeToReview')}
+                  {busy ? t(lang, 'proposeRunning') : t(lang, 'proposeToGovernance')}
                 </button>
               </div>
             </div>
@@ -975,42 +975,42 @@ export default function Tasks({
               )}
             </div>
 
-            {detail.review_sync && (
+            {detail.governance_sync && (
               <div className="rounded-lg border border-gray-800 p-4">
-                <h4 className="text-sm font-medium text-gray-300 mb-3">{t(lang, 'reviewSync')}</h4>
+                <h4 className="text-sm font-medium text-gray-300 mb-3">{t(lang, 'governanceSync')}</h4>
                 <dl className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
                   <div>
-                    <dt className="text-gray-500">{t(lang, 'reviewRequestId')}</dt>
+                    <dt className="text-gray-500">{t(lang, 'governanceRequestId')}</dt>
                     <dd className="text-gray-200 font-mono text-xs break-all">
-                      {detail.review_sync.review_request_id}
+                      {detail.governance_sync.governance_request_id}
                     </dd>
                   </div>
                   <div>
-                    <dt className="text-gray-500">{t(lang, 'reviewStatus')}</dt>
+                    <dt className="text-gray-500">{t(lang, 'governanceStatus')}</dt>
                     <dd className="text-gray-200">
-                      {formatStatus(detail.review_sync.last_review_status)}
+                      {formatStatus(detail.governance_sync.last_governance_status)}
                     </dd>
                   </div>
                   <div>
                     <dt className="text-gray-500">{t(lang, 'httpStatus')}</dt>
-                    <dd className="text-gray-200">{detail.review_sync.last_review_http_status || '—'}</dd>
+                    <dd className="text-gray-200">{detail.governance_sync.last_governance_http_status || '—'}</dd>
                   </div>
                   <div>
                     <dt className="text-gray-500">{t(lang, 'lastChecked')}</dt>
-                    <dd className="text-gray-200">{formatDateTime(detail.review_sync.last_checked_at)}</dd>
+                    <dd className="text-gray-200">{formatDateTime(detail.governance_sync.last_checked_at)}</dd>
                   </div>
                   <div>
                     <dt className="text-gray-500">{t(lang, 'nextCheckAt')}</dt>
-                    <dd className="text-gray-200">{formatDateTime(detail.review_sync.next_check_at)}</dd>
+                    <dd className="text-gray-200">{formatDateTime(detail.governance_sync.next_check_at)}</dd>
                   </div>
                   <div>
                     <dt className="text-gray-500">{t(lang, 'consecutiveFailures')}</dt>
-                    <dd className="text-gray-200">{detail.review_sync.consecutive_failures}</dd>
+                    <dd className="text-gray-200">{detail.governance_sync.consecutive_failures}</dd>
                   </div>
-                  {detail.review_sync.last_error && (
+                  {detail.governance_sync.last_error && (
                     <div className="sm:col-span-2">
                       <dt className="text-gray-500">{t(lang, 'syncError')}</dt>
-                      <dd className="text-rose-300">{detail.review_sync.last_error}</dd>
+                      <dd className="text-rose-300">{detail.governance_sync.last_error}</dd>
                     </div>
                   )}
                 </dl>
@@ -1085,11 +1085,11 @@ export default function Tasks({
               </div>
             )}
 
-            {(detail.linked_review_requests || []).length > 0 && (
+            {(detail.linked_governance_requests || []).length > 0 && (
               <div className="rounded-lg border border-gray-800 p-4">
-                <h4 className="text-sm font-medium text-gray-300 mb-2">{t(lang, 'linkedReview')}</h4>
+                <h4 className="text-sm font-medium text-gray-300 mb-2">{t(lang, 'linkedGovernance')}</h4>
                 <ul className="space-y-2 text-sm">
-                  {detail.linked_review_requests.map((lr) => (
+                  {detail.linked_governance_requests.map((lr) => (
                     <li key={lr.action_id} className="text-gray-400 border-l-2 border-indigo-600 pl-2">
                       {lr.request ? (
                         <div className="flex flex-wrap items-center gap-2">

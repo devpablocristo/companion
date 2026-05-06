@@ -25,24 +25,24 @@ type Repository interface {
 	SaveExecution(ctx context.Context, r domain.ExecutionResult) error
 	AcquireExecutionLock(ctx context.Context, lockKey string) (bool, error)
 	ReleaseExecutionLock(ctx context.Context, lockKey string) error
-	GetExecutionByIdempotency(ctx context.Context, taskID uuid.UUID, operation string, reviewRequestID *uuid.UUID, idempotencyKey string) (domain.ExecutionResult, error)
+	GetExecutionByIdempotency(ctx context.Context, taskID uuid.UUID, operation string, governanceRequestID *uuid.UUID, idempotencyKey string) (domain.ExecutionResult, error)
 	ListExecutions(ctx context.Context, connectorID uuid.UUID, limit int) ([]domain.ExecutionResult, error)
 }
 
-// ReviewChecker verifica que una ejecución tiene aprobación de Nexus y pertenece al tenant esperado.
-type ReviewChecker interface {
-	AuthorizeExecution(ctx context.Context, reviewRequestID uuid.UUID, orgID string) (bool, error)
+// GovernanceChecker verifica que una ejecución tiene aprobación de Nexus y pertenece al tenant esperado.
+type GovernanceChecker interface {
+	AuthorizeExecution(ctx context.Context, governanceRequestID uuid.UUID, orgID string) (bool, error)
 }
 
 // Usecases lógica de negocio de conectores.
 type Usecases struct {
 	repo     Repository
 	registry *registry.Registry
-	checker  ReviewChecker
+	checker  GovernanceChecker
 }
 
 // NewUsecases crea una nueva instancia de Usecases.
-func NewUsecases(repo Repository, reg *registry.Registry, checker ReviewChecker) *Usecases {
+func NewUsecases(repo Repository, reg *registry.Registry, checker GovernanceChecker) *Usecases {
 	return &Usecases{
 		repo:     repo,
 		registry: reg,
@@ -115,7 +115,7 @@ func (uc *Usecases) Execute(ctx context.Context, spec domain.ExecutionSpec) (dom
 	}
 
 	if spec.IdempotencyKey != "" && spec.TaskID != nil {
-		existing, err := uc.repo.GetExecutionByIdempotency(ctx, *spec.TaskID, spec.Operation, spec.ReviewRequestID, spec.IdempotencyKey)
+		existing, err := uc.repo.GetExecutionByIdempotency(ctx, *spec.TaskID, spec.Operation, spec.GovernanceRequestID, spec.IdempotencyKey)
 		if err == nil && existing.ID != uuid.Nil {
 			return existing, nil
 		}
@@ -125,19 +125,19 @@ func (uc *Usecases) Execute(ctx context.Context, spec domain.ExecutionSpec) (dom
 	}
 
 	// Gating obligatorio: operations write/side-effect requieren approval/allow en Nexus.
-	if capability.NeedsReview() && uc.checker == nil {
+	if capability.NeedsGovernance() && uc.checker == nil {
 		return domain.ExecutionResult{}, ErrUngated
 	}
-	if capability.NeedsReview() && spec.ReviewRequestID != nil {
-		approved, err := uc.checker.AuthorizeExecution(ctx, *spec.ReviewRequestID, spec.OrgID)
+	if capability.NeedsGovernance() && spec.GovernanceRequestID != nil {
+		approved, err := uc.checker.AuthorizeExecution(ctx, *spec.GovernanceRequestID, spec.OrgID)
 		if err != nil {
-			slog.Error("check review approval", "error", err, "review_request_id", spec.ReviewRequestID)
-			return domain.ExecutionResult{}, fmt.Errorf("check review approval: %w", err)
+			slog.Error("check governance approval", "error", err, "governance_request_id", spec.GovernanceRequestID)
+			return domain.ExecutionResult{}, fmt.Errorf("check governance approval: %w", err)
 		}
 		if !approved {
 			return domain.ExecutionResult{}, ErrUngated
 		}
-	} else if capability.NeedsReview() && spec.ReviewRequestID == nil {
+	} else if capability.NeedsGovernance() && spec.GovernanceRequestID == nil {
 		return domain.ExecutionResult{}, ErrUngated
 	}
 
@@ -165,7 +165,7 @@ func (uc *Usecases) Execute(ctx context.Context, spec domain.ExecutionSpec) (dom
 			}
 		}()
 
-		existing, err := uc.repo.GetExecutionByIdempotency(ctx, *spec.TaskID, spec.Operation, spec.ReviewRequestID, spec.IdempotencyKey)
+		existing, err := uc.repo.GetExecutionByIdempotency(ctx, *spec.TaskID, spec.Operation, spec.GovernanceRequestID, spec.IdempotencyKey)
 		if err == nil && existing.ID != uuid.Nil {
 			return existing, nil
 		}
@@ -193,7 +193,7 @@ func (uc *Usecases) Execute(ctx context.Context, spec domain.ExecutionSpec) (dom
 	// Persistir resultado
 	if saveErr := uc.repo.SaveExecution(ctx, result); saveErr != nil {
 		if IsConflict(saveErr) && spec.IdempotencyKey != "" && spec.TaskID != nil {
-			existing, err := uc.repo.GetExecutionByIdempotency(ctx, *spec.TaskID, spec.Operation, spec.ReviewRequestID, spec.IdempotencyKey)
+			existing, err := uc.repo.GetExecutionByIdempotency(ctx, *spec.TaskID, spec.Operation, spec.GovernanceRequestID, spec.IdempotencyKey)
 			if err == nil && existing.ID != uuid.Nil {
 				return existing, nil
 			}
@@ -243,23 +243,23 @@ type ConnectorCapabilities struct {
 	Capabilities []domain.Capability
 }
 
-// ReviewCheckerAdapter adapta el reviewclient para verificar aprobaciones.
-type ReviewCheckerAdapter struct {
+// GovernanceCheckerAdapter adapta el governanceclient para verificar aprobaciones.
+type GovernanceCheckerAdapter struct {
 	getRequest func(ctx context.Context, id uuid.UUID) (status string, orgID string, httpStatus int, err error)
 }
 
-// NewReviewCheckerAdapter crea un adaptador para verificar aprobaciones.
-func NewReviewCheckerAdapter(getRequest func(ctx context.Context, id uuid.UUID) (string, string, int, error)) *ReviewCheckerAdapter {
-	return &ReviewCheckerAdapter{getRequest: getRequest}
+// NewGovernanceCheckerAdapter crea un adaptador para verificar aprobaciones.
+func NewGovernanceCheckerAdapter(getRequest func(ctx context.Context, id uuid.UUID) (string, string, int, error)) *GovernanceCheckerAdapter {
+	return &GovernanceCheckerAdapter{getRequest: getRequest}
 }
 
 // AuthorizeExecution verifica si un request de Nexus fue aprobado y pertenece a la misma org.
-func (a *ReviewCheckerAdapter) AuthorizeExecution(ctx context.Context, reviewRequestID uuid.UUID, orgID string) (bool, error) {
-	status, reviewOrgID, _, err := a.getRequest(ctx, reviewRequestID)
+func (a *GovernanceCheckerAdapter) AuthorizeExecution(ctx context.Context, governanceRequestID uuid.UUID, orgID string) (bool, error) {
+	status, governanceOrgID, _, err := a.getRequest(ctx, governanceRequestID)
 	if err != nil {
 		return false, err
 	}
-	if strings.TrimSpace(orgID) != "" && strings.TrimSpace(reviewOrgID) != "" && strings.TrimSpace(orgID) != strings.TrimSpace(reviewOrgID) {
+	if strings.TrimSpace(orgID) != "" && strings.TrimSpace(governanceOrgID) != "" && strings.TrimSpace(orgID) != strings.TrimSpace(governanceOrgID) {
 		return false, ErrForbidden
 	}
 	// Estados que indican aprobación
@@ -369,11 +369,11 @@ func executionLockKey(spec domain.ExecutionSpec) string {
 	if spec.TaskID == nil || strings.TrimSpace(spec.IdempotencyKey) == "" {
 		return ""
 	}
-	reviewID := "none"
-	if spec.ReviewRequestID != nil {
-		reviewID = spec.ReviewRequestID.String()
+	governanceID := "none"
+	if spec.GovernanceRequestID != nil {
+		governanceID = spec.GovernanceRequestID.String()
 	}
-	return fmt.Sprintf("connector-execution:%s:%s:%s:%s", spec.TaskID.String(), spec.Operation, reviewID, strings.TrimSpace(spec.IdempotencyKey))
+	return fmt.Sprintf("connector-execution:%s:%s:%s:%s", spec.TaskID.String(), spec.Operation, governanceID, strings.TrimSpace(spec.IdempotencyKey))
 }
 
 func buildExecutionEvidence(config domain.Connector, capability domain.Capability, spec domain.ExecutionSpec, result domain.ExecutionResult) json.RawMessage {
@@ -403,8 +403,8 @@ func buildExecutionEvidence(config domain.Connector, capability domain.Capabilit
 	if spec.TaskID != nil {
 		evidence["task_id"] = spec.TaskID.String()
 	}
-	if spec.ReviewRequestID != nil {
-		evidence["review_request_id"] = spec.ReviewRequestID.String()
+	if spec.GovernanceRequestID != nil {
+		evidence["governance_request_id"] = spec.GovernanceRequestID.String()
 	}
 	raw, err := json.Marshal(evidence)
 	if err != nil {

@@ -12,7 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/devpablocristo/core/governance/go/reviewclient"
+	"github.com/devpablocristo/core/governance/go/governanceclient"
 	connectordomain "github.com/devpablocristo/companion/internal/connectors/usecases/domain"
 	domain "github.com/devpablocristo/companion/internal/tasks/usecases/domain"
 )
@@ -22,7 +22,7 @@ type fakeRepo struct {
 	lastPropose    map[uuid.UUID]uuid.UUID
 	actions        []domain.TaskAction
 	artifacts      []domain.TaskArtifact
-	reviewSync     map[uuid.UUID]domain.TaskReviewSyncState
+	governanceSync     map[uuid.UUID]domain.TaskGovernanceSyncState
 	executionPlan  map[uuid.UUID]domain.TaskExecutionPlan
 	executionState map[uuid.UUID]domain.TaskExecutionState
 }
@@ -48,10 +48,10 @@ func (f *fakeRepo) GetTaskByID(ctx context.Context, id uuid.UUID) (domain.Task, 
 	if !ok {
 		return domain.Task{}, ErrNotFound
 	}
-	if state, ok := f.reviewSync[id]; ok {
-		t.ReviewStatus = state.LastReviewStatus
-		t.ReviewLastCheckedAt = &state.LastCheckedAt
-		t.ReviewSyncError = state.LastError
+	if state, ok := f.governanceSync[id]; ok {
+		t.GovernanceStatus = state.LastGovernanceStatus
+		t.GovernanceLastCheckedAt = &state.LastCheckedAt
+		t.GovernanceSyncError = state.LastError
 	}
 	return t, nil
 }
@@ -62,10 +62,10 @@ func (f *fakeRepo) ListTasks(ctx context.Context, orgID string, limit int) ([]do
 		if orgID != "" && t.OrgID != "" && t.OrgID != orgID {
 			continue
 		}
-		if state, ok := f.reviewSync[t.ID]; ok {
-			t.ReviewStatus = state.LastReviewStatus
-			t.ReviewLastCheckedAt = &state.LastCheckedAt
-			t.ReviewSyncError = state.LastError
+		if state, ok := f.governanceSync[t.ID]; ok {
+			t.GovernanceStatus = state.LastGovernanceStatus
+			t.GovernanceLastCheckedAt = &state.LastCheckedAt
+			t.GovernanceSyncError = state.LastError
 		}
 		out = append(out, t)
 	}
@@ -93,13 +93,13 @@ func (f *fakeRepo) ListTasksByStatus(ctx context.Context, status string, limit i
 	return out, nil
 }
 
-func (f *fakeRepo) ListTasksPendingReviewSync(ctx context.Context, now time.Time, limit int) ([]domain.Task, error) {
+func (f *fakeRepo) ListTasksPendingGovernanceSync(ctx context.Context, now time.Time, limit int) ([]domain.Task, error) {
 	var out []domain.Task
 	for _, t := range f.tasks {
 		if t.Status != domain.TaskStatusWaitingForApproval {
 			continue
 		}
-		state, ok := f.reviewSync[t.ID]
+		state, ok := f.governanceSync[t.ID]
 		if ok && state.NextCheckAt.After(now) {
 			continue
 		}
@@ -108,7 +108,7 @@ func (f *fakeRepo) ListTasksPendingReviewSync(ctx context.Context, now time.Time
 	return out, nil
 }
 
-func (f *fakeRepo) LatestProposeReviewRequestID(ctx context.Context, taskID uuid.UUID) (uuid.UUID, error) {
+func (f *fakeRepo) LatestProposeGovernanceRequestID(ctx context.Context, taskID uuid.UUID) (uuid.UUID, error) {
 	if f.lastPropose == nil {
 		return uuid.Nil, ErrNotFound
 	}
@@ -119,22 +119,22 @@ func (f *fakeRepo) LatestProposeReviewRequestID(ctx context.Context, taskID uuid
 	return rid, nil
 }
 
-func (f *fakeRepo) GetReviewSyncState(ctx context.Context, taskID uuid.UUID) (domain.TaskReviewSyncState, error) {
-	if f.reviewSync == nil {
-		return domain.TaskReviewSyncState{}, ErrNotFound
+func (f *fakeRepo) GetGovernanceSyncState(ctx context.Context, taskID uuid.UUID) (domain.TaskGovernanceSyncState, error) {
+	if f.governanceSync == nil {
+		return domain.TaskGovernanceSyncState{}, ErrNotFound
 	}
-	state, ok := f.reviewSync[taskID]
+	state, ok := f.governanceSync[taskID]
 	if !ok {
-		return domain.TaskReviewSyncState{}, ErrNotFound
+		return domain.TaskGovernanceSyncState{}, ErrNotFound
 	}
 	return state, nil
 }
 
-func (f *fakeRepo) UpsertReviewSyncState(ctx context.Context, s domain.TaskReviewSyncState) (domain.TaskReviewSyncState, error) {
-	if f.reviewSync == nil {
-		f.reviewSync = make(map[uuid.UUID]domain.TaskReviewSyncState)
+func (f *fakeRepo) UpsertGovernanceSyncState(ctx context.Context, s domain.TaskGovernanceSyncState) (domain.TaskGovernanceSyncState, error) {
+	if f.governanceSync == nil {
+		f.governanceSync = make(map[uuid.UUID]domain.TaskGovernanceSyncState)
 	}
-	if existing, ok := f.reviewSync[s.TaskID]; ok {
+	if existing, ok := f.governanceSync[s.TaskID]; ok {
 		if s.CreatedAt.IsZero() {
 			s.CreatedAt = existing.CreatedAt
 		}
@@ -145,7 +145,7 @@ func (f *fakeRepo) UpsertReviewSyncState(ctx context.Context, s domain.TaskRevie
 	if s.UpdatedAt.IsZero() {
 		s.UpdatedAt = time.Now().UTC()
 	}
-	f.reviewSync[s.TaskID] = s
+	f.governanceSync[s.TaskID] = s
 	return s, nil
 }
 
@@ -233,18 +233,18 @@ func (f *fakeRepo) InsertAction(ctx context.Context, a domain.TaskAction) (domai
 	return a, nil
 }
 
-func (f *fakeRepo) UpdateActionReviewResult(ctx context.Context, actionID uuid.UUID, reviewRequestID *uuid.UUID, errMsg string) error {
+func (f *fakeRepo) UpdateActionGovernanceResult(ctx context.Context, actionID uuid.UUID, governanceRequestID *uuid.UUID, errMsg string) error {
 	for i := range f.actions {
 		if f.actions[i].ID != actionID {
 			continue
 		}
-		f.actions[i].ReviewRequestID = reviewRequestID
+		f.actions[i].GovernanceRequestID = governanceRequestID
 		f.actions[i].ErrorMessage = errMsg
-		if reviewRequestID != nil && f.actions[i].ActionType == TaskActionPropose {
+		if governanceRequestID != nil && f.actions[i].ActionType == TaskActionPropose {
 			if f.lastPropose == nil {
 				f.lastPropose = make(map[uuid.UUID]uuid.UUID)
 			}
-			f.lastPropose[f.actions[i].TaskID] = *reviewRequestID
+			f.lastPropose[f.actions[i].TaskID] = *governanceRequestID
 		}
 		return nil
 	}
@@ -292,9 +292,9 @@ func (f *fakeRepo) countActions(actionType string) int {
 	return count
 }
 
-type stubReview struct {
-	submitFn func(ctx context.Context, idempotencyKey string, body reviewclient.SubmitRequestBody) (reviewclient.SubmitResponse, error)
-	getFn    func(ctx context.Context, id string) (reviewclient.RequestSummary, int, error)
+type stubGovernance struct {
+	submitFn func(ctx context.Context, idempotencyKey string, body governanceclient.SubmitRequestBody) (governanceclient.SubmitResponse, error)
+	getFn    func(ctx context.Context, id string) (governanceclient.RequestSummary, int, error)
 	reportFn func(ctx context.Context, id string, success bool, result map[string]any, durationMS int64, errorMessage string) (int, error)
 }
 
@@ -354,26 +354,26 @@ func (s *stubExecutor) Execute(ctx context.Context, spec connectordomain.Executi
 		Payload:         spec.Payload,
 		ResultJSON:      json.RawMessage(`{"ok":true}`),
 		TaskID:          spec.TaskID,
-		ReviewRequestID: spec.ReviewRequestID,
+		GovernanceRequestID: spec.GovernanceRequestID,
 		CreatedAt:       time.Now().UTC(),
 	}, nil
 }
 
-func (s *stubReview) SubmitRequest(ctx context.Context, idempotencyKey string, body reviewclient.SubmitRequestBody) (reviewclient.SubmitResponse, error) {
+func (s *stubGovernance) SubmitRequest(ctx context.Context, idempotencyKey string, body governanceclient.SubmitRequestBody) (governanceclient.SubmitResponse, error) {
 	if s.submitFn != nil {
 		return s.submitFn(ctx, idempotencyKey, body)
 	}
-	return reviewclient.SubmitResponse{}, nil
+	return governanceclient.SubmitResponse{}, nil
 }
 
-func (s *stubReview) GetRequest(ctx context.Context, id string) (reviewclient.RequestSummary, int, error) {
+func (s *stubGovernance) GetRequest(ctx context.Context, id string) (governanceclient.RequestSummary, int, error) {
 	if s.getFn != nil {
 		return s.getFn(ctx, id)
 	}
-	return reviewclient.RequestSummary{}, http.StatusNotFound, nil
+	return governanceclient.RequestSummary{}, http.StatusNotFound, nil
 }
 
-func (s *stubReview) ReportResult(ctx context.Context, id string, success bool, result map[string]any, durationMS int64, errorMessage string) (int, error) {
+func (s *stubGovernance) ReportResult(ctx context.Context, id string, success bool, result map[string]any, durationMS int64, errorMessage string) (int, error) {
 	if s.reportFn != nil {
 		return s.reportFn(ctx, id, success, result, durationMS, errorMessage)
 	}
@@ -382,7 +382,7 @@ func (s *stubReview) ReportResult(ctx context.Context, id string, success bool, 
 
 func createWaitingTask(t *testing.T, repo *fakeRepo) domain.Task {
 	t.Helper()
-	uc := NewUsecases(repo, &stubReview{})
+	uc := NewUsecases(repo, &stubGovernance{})
 	created, err := uc.Create(context.Background(), CreateTaskInput{Title: "sync-test"})
 	if err != nil {
 		t.Fatal(err)
@@ -398,7 +398,7 @@ func createWaitingTask(t *testing.T, repo *fakeRepo) domain.Task {
 
 func TestUsecases_Create_requiresTitle(t *testing.T) {
 	t.Parallel()
-	uc := NewUsecases(&fakeRepo{}, &stubReview{})
+	uc := NewUsecases(&fakeRepo{}, &stubGovernance{})
 	_, err := uc.Create(context.Background(), CreateTaskInput{})
 	if err == nil {
 		t.Fatal("expected error")
@@ -408,7 +408,7 @@ func TestUsecases_Create_requiresTitle(t *testing.T) {
 func TestUsecases_Create_ok(t *testing.T) {
 	t.Parallel()
 	r := &fakeRepo{}
-	uc := NewUsecases(r, &stubReview{})
+	uc := NewUsecases(r, &stubGovernance{})
 	mem := &stubTaskMemory{}
 	uc.SetTaskMemory(mem)
 	out, err := uc.Create(context.Background(), CreateTaskInput{Title: "x"})
@@ -427,7 +427,7 @@ func TestUsecases_SetExecutionPlan_persistsAndAudits(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	repo := &fakeRepo{}
-	uc := NewUsecases(repo, &stubReview{})
+	uc := NewUsecases(repo, &stubGovernance{})
 	connectorID := uuid.New()
 	uc.SetExecutor(&stubExecutor{
 		getConnectorFn: func(ctx context.Context, id uuid.UUID) (connectordomain.Connector, error) {
@@ -457,16 +457,16 @@ func TestUsecases_SetExecutionPlan_persistsAndAudits(t *testing.T) {
 	}
 }
 
-func TestUsecases_Propose_persistsInitialReviewSyncState(t *testing.T) {
+func TestUsecases_Propose_persistsInitialGovernanceSyncState(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	repo := &fakeRepo{}
-	reviewRequestID := uuid.New()
+	governanceRequestID := uuid.New()
 	mem := &stubTaskMemory{}
-	uc := NewUsecases(repo, &stubReview{
-		submitFn: func(ctx context.Context, idempotencyKey string, body reviewclient.SubmitRequestBody) (reviewclient.SubmitResponse, error) {
-			return reviewclient.SubmitResponse{
-				RequestID: reviewRequestID.String(),
+	uc := NewUsecases(repo, &stubGovernance{
+		submitFn: func(ctx context.Context, idempotencyKey string, body governanceclient.SubmitRequestBody) (governanceclient.SubmitResponse, error) {
+			return governanceclient.SubmitResponse{
+				RequestID: governanceRequestID.String(),
 				Status:    "pending_approval",
 				Decision:  "require_approval",
 				RiskLevel: "high",
@@ -490,22 +490,22 @@ func TestUsecases_Propose_persistsInitialReviewSyncState(t *testing.T) {
 	if submit.Status != "pending_approval" {
 		t.Fatalf("unexpected submit status %q", submit.Status)
 	}
-	if action.ReviewRequestID == nil || *action.ReviewRequestID != reviewRequestID {
-		t.Fatalf("unexpected action review request id %+v", action.ReviewRequestID)
+	if action.GovernanceRequestID == nil || *action.GovernanceRequestID != governanceRequestID {
+		t.Fatalf("unexpected action governance request id %+v", action.GovernanceRequestID)
 	}
 
-	state, err := repo.GetReviewSyncState(ctx, task.ID)
+	state, err := repo.GetGovernanceSyncState(ctx, task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.ReviewRequestID != reviewRequestID {
-		t.Fatalf("unexpected state review_request_id %s", state.ReviewRequestID)
+	if state.GovernanceRequestID != governanceRequestID {
+		t.Fatalf("unexpected state governance_request_id %s", state.GovernanceRequestID)
 	}
-	if state.LastReviewStatus != "pending_approval" {
-		t.Fatalf("unexpected state status %q", state.LastReviewStatus)
+	if state.LastGovernanceStatus != "pending_approval" {
+		t.Fatalf("unexpected state status %q", state.LastGovernanceStatus)
 	}
-	if state.LastReviewHTTPStatus != http.StatusCreated {
-		t.Fatalf("unexpected state http status %d", state.LastReviewHTTPStatus)
+	if state.LastGovernanceHTTPStatus != http.StatusCreated {
+		t.Fatalf("unexpected state http status %d", state.LastGovernanceHTTPStatus)
 	}
 	if state.LastError != "" || state.ConsecutiveFailures != 0 {
 		t.Fatalf("unexpected state error/failures %+v", state)
@@ -514,23 +514,23 @@ func TestUsecases_Propose_persistsInitialReviewSyncState(t *testing.T) {
 		t.Fatalf("expected create+propose memory projection, got %d writes", len(mem.writes))
 	}
 	lastSummary := mem.writes[len(mem.writes)-2]
-	if lastSummary.Kind != taskMemoryKindSummary || !strings.Contains(lastSummary.ContentText, "waiting for Review") {
+	if lastSummary.Kind != taskMemoryKindSummary || !strings.Contains(lastSummary.ContentText, "waiting for Governance") {
 		t.Fatalf("unexpected summary write %+v", lastSummary)
 	}
 }
 
-func TestUsecases_SyncTaskReview_pendingIsIdempotent(t *testing.T) {
+func TestUsecases_SyncTaskGovernance_pendingIsIdempotent(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	repo := &fakeRepo{reviewSync: make(map[uuid.UUID]domain.TaskReviewSyncState)}
+	repo := &fakeRepo{governanceSync: make(map[uuid.UUID]domain.TaskGovernanceSyncState)}
 	task := createWaitingTask(t, repo)
 	rid := uuid.New()
 	lastChecked := time.Now().UTC().Add(-time.Minute)
-	repo.reviewSync[task.ID] = domain.TaskReviewSyncState{
+	repo.governanceSync[task.ID] = domain.TaskGovernanceSyncState{
 		TaskID:               task.ID,
-		ReviewRequestID:      rid,
-		LastReviewStatus:     "pending_approval",
-		LastReviewHTTPStatus: http.StatusOK,
+		GovernanceRequestID:      rid,
+		LastGovernanceStatus:     "pending_approval",
+		LastGovernanceHTTPStatus: http.StatusOK,
 		LastCheckedAt:        lastChecked,
 		LastError:            "",
 		ConsecutiveFailures:  0,
@@ -538,29 +538,29 @@ func TestUsecases_SyncTaskReview_pendingIsIdempotent(t *testing.T) {
 		CreatedAt:            lastChecked,
 		UpdatedAt:            lastChecked,
 	}
-	uc := NewUsecases(repo, &stubReview{
-		getFn: func(ctx context.Context, id string) (reviewclient.RequestSummary, int, error) {
-			return reviewclient.RequestSummary{ID: rid.String(), Status: "pending_approval"}, http.StatusOK, nil
+	uc := NewUsecases(repo, &stubGovernance{
+		getFn: func(ctx context.Context, id string) (governanceclient.RequestSummary, int, error) {
+			return governanceclient.RequestSummary{ID: rid.String(), Status: "pending_approval"}, http.StatusOK, nil
 		},
 	})
-	uc.SetReviewSyncInterval(5 * time.Second)
+	uc.SetGovernanceSyncInterval(5 * time.Second)
 
-	out, err := uc.SyncTaskReview(ctx, task.ID)
+	out, err := uc.SyncTaskGovernance(ctx, task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if out.Status != domain.TaskStatusWaitingForApproval {
 		t.Fatalf("expected waiting_for_approval, got %q", out.Status)
 	}
-	if repo.countActions(TaskActionSyncReview) != 0 {
-		t.Fatalf("expected no sync_review action, got %d", repo.countActions(TaskActionSyncReview))
+	if repo.countActions(TaskActionSyncGovernance) != 0 {
+		t.Fatalf("expected no sync_governance action, got %d", repo.countActions(TaskActionSyncGovernance))
 	}
 
-	state, err := repo.GetReviewSyncState(ctx, task.ID)
+	state, err := repo.GetGovernanceSyncState(ctx, task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.LastReviewStatus != "pending_approval" || state.LastError != "" || state.ConsecutiveFailures != 0 {
+	if state.LastGovernanceStatus != "pending_approval" || state.LastError != "" || state.ConsecutiveFailures != 0 {
 		t.Fatalf("unexpected state %+v", state)
 	}
 	if !state.LastCheckedAt.After(lastChecked) {
@@ -568,32 +568,32 @@ func TestUsecases_SyncTaskReview_pendingIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestUsecases_SyncTaskReview_approvedToDone(t *testing.T) {
+func TestUsecases_SyncTaskGovernance_approvedToDone(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	repo := &fakeRepo{reviewSync: make(map[uuid.UUID]domain.TaskReviewSyncState)}
+	repo := &fakeRepo{governanceSync: make(map[uuid.UUID]domain.TaskGovernanceSyncState)}
 	task := createWaitingTask(t, repo)
 	rid := uuid.New()
-	repo.reviewSync[task.ID] = domain.TaskReviewSyncState{
+	repo.governanceSync[task.ID] = domain.TaskGovernanceSyncState{
 		TaskID:               task.ID,
-		ReviewRequestID:      rid,
-		LastReviewStatus:     "pending_approval",
-		LastReviewHTTPStatus: http.StatusCreated,
+		GovernanceRequestID:      rid,
+		LastGovernanceStatus:     "pending_approval",
+		LastGovernanceHTTPStatus: http.StatusCreated,
 		LastCheckedAt:        time.Now().UTC().Add(-time.Minute),
 		NextCheckAt:          time.Now().UTC().Add(-time.Second),
 		CreatedAt:            time.Now().UTC().Add(-time.Minute),
 		UpdatedAt:            time.Now().UTC().Add(-time.Minute),
 	}
-	uc := NewUsecases(repo, &stubReview{
-		getFn: func(ctx context.Context, id string) (reviewclient.RequestSummary, int, error) {
+	uc := NewUsecases(repo, &stubGovernance{
+		getFn: func(ctx context.Context, id string) (governanceclient.RequestSummary, int, error) {
 			if id != rid.String() {
-				return reviewclient.RequestSummary{}, http.StatusNotFound, nil
+				return governanceclient.RequestSummary{}, http.StatusNotFound, nil
 			}
-			return reviewclient.RequestSummary{ID: rid.String(), Status: "approved"}, http.StatusOK, nil
+			return governanceclient.RequestSummary{ID: rid.String(), Status: "approved"}, http.StatusOK, nil
 		},
 	})
 
-	out, err := uc.SyncTaskReview(ctx, task.ID)
+	out, err := uc.SyncTaskGovernance(ctx, task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -603,32 +603,32 @@ func TestUsecases_SyncTaskReview_approvedToDone(t *testing.T) {
 	if out.ClosedAt == nil {
 		t.Fatal("expected ClosedAt on terminal state")
 	}
-	if repo.countActions(TaskActionSyncReview) != 1 {
-		t.Fatalf("expected one sync_review action, got %d", repo.countActions(TaskActionSyncReview))
+	if repo.countActions(TaskActionSyncGovernance) != 1 {
+		t.Fatalf("expected one sync_governance action, got %d", repo.countActions(TaskActionSyncGovernance))
 	}
-	state, err := repo.GetReviewSyncState(ctx, task.ID)
+	state, err := repo.GetGovernanceSyncState(ctx, task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.LastReviewStatus != "approved" || state.LastError != "" || state.ConsecutiveFailures != 0 {
+	if state.LastGovernanceStatus != "approved" || state.LastError != "" || state.ConsecutiveFailures != 0 {
 		t.Fatalf("unexpected state %+v", state)
 	}
 }
 
-func TestUsecases_SyncTaskReview_approvedWithExecutionPlanToWaitingForInput(t *testing.T) {
+func TestUsecases_SyncTaskGovernance_approvedWithExecutionPlanToWaitingForInput(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	repo := &fakeRepo{
-		reviewSync:    make(map[uuid.UUID]domain.TaskReviewSyncState),
+		governanceSync:    make(map[uuid.UUID]domain.TaskGovernanceSyncState),
 		executionPlan: make(map[uuid.UUID]domain.TaskExecutionPlan),
 	}
 	task := createWaitingTask(t, repo)
 	rid := uuid.New()
-	repo.reviewSync[task.ID] = domain.TaskReviewSyncState{
+	repo.governanceSync[task.ID] = domain.TaskGovernanceSyncState{
 		TaskID:               task.ID,
-		ReviewRequestID:      rid,
-		LastReviewStatus:     "pending_approval",
-		LastReviewHTTPStatus: http.StatusCreated,
+		GovernanceRequestID:      rid,
+		LastGovernanceStatus:     "pending_approval",
+		LastGovernanceHTTPStatus: http.StatusCreated,
 		LastCheckedAt:        time.Now().UTC().Add(-time.Minute),
 		NextCheckAt:          time.Now().UTC().Add(-time.Second),
 		CreatedAt:            time.Now().UTC().Add(-time.Minute),
@@ -642,13 +642,13 @@ func TestUsecases_SyncTaskReview_approvedWithExecutionPlanToWaitingForInput(t *t
 		CreatedAt:   time.Now().UTC().Add(-time.Minute),
 		UpdatedAt:   time.Now().UTC().Add(-time.Minute),
 	}
-	uc := NewUsecases(repo, &stubReview{
-		getFn: func(ctx context.Context, id string) (reviewclient.RequestSummary, int, error) {
-			return reviewclient.RequestSummary{ID: rid.String(), Status: "approved"}, http.StatusOK, nil
+	uc := NewUsecases(repo, &stubGovernance{
+		getFn: func(ctx context.Context, id string) (governanceclient.RequestSummary, int, error) {
+			return governanceclient.RequestSummary{ID: rid.String(), Status: "approved"}, http.StatusOK, nil
 		},
 	})
 
-	out, err := uc.SyncTaskReview(ctx, task.ID)
+	out, err := uc.SyncTaskGovernance(ctx, task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -657,20 +657,20 @@ func TestUsecases_SyncTaskReview_approvedWithExecutionPlanToWaitingForInput(t *t
 	}
 }
 
-func TestUsecases_SyncTaskReview_rejectedToFailed(t *testing.T) {
+func TestUsecases_SyncTaskGovernance_rejectedToFailed(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	repo := &fakeRepo{lastPropose: make(map[uuid.UUID]uuid.UUID)}
 	task := createWaitingTask(t, repo)
 	rid := uuid.New()
 	repo.lastPropose[task.ID] = rid
-	uc := NewUsecases(repo, &stubReview{
-		getFn: func(ctx context.Context, id string) (reviewclient.RequestSummary, int, error) {
-			return reviewclient.RequestSummary{ID: rid.String(), Status: "rejected"}, http.StatusOK, nil
+	uc := NewUsecases(repo, &stubGovernance{
+		getFn: func(ctx context.Context, id string) (governanceclient.RequestSummary, int, error) {
+			return governanceclient.RequestSummary{ID: rid.String(), Status: "rejected"}, http.StatusOK, nil
 		},
 	})
 
-	out, err := uc.SyncTaskReview(ctx, task.ID)
+	out, err := uc.SyncTaskGovernance(ctx, task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -680,27 +680,27 @@ func TestUsecases_SyncTaskReview_rejectedToFailed(t *testing.T) {
 	if out.ClosedAt == nil {
 		t.Fatal("expected ClosedAt on failed task")
 	}
-	state, err := repo.GetReviewSyncState(ctx, task.ID)
+	state, err := repo.GetGovernanceSyncState(ctx, task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.LastReviewStatus != "rejected" {
-		t.Fatalf("unexpected state status %q", state.LastReviewStatus)
+	if state.LastGovernanceStatus != "rejected" {
+		t.Fatalf("unexpected state status %q", state.LastGovernanceStatus)
 	}
 }
 
-func TestUsecases_SyncTaskReview_errorBackoffThenReset(t *testing.T) {
+func TestUsecases_SyncTaskGovernance_errorBackoffThenReset(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	repo := &fakeRepo{reviewSync: make(map[uuid.UUID]domain.TaskReviewSyncState)}
+	repo := &fakeRepo{governanceSync: make(map[uuid.UUID]domain.TaskGovernanceSyncState)}
 	task := createWaitingTask(t, repo)
 	rid := uuid.New()
 	originalNextCheck := time.Now().UTC().Add(-time.Second)
-	repo.reviewSync[task.ID] = domain.TaskReviewSyncState{
+	repo.governanceSync[task.ID] = domain.TaskGovernanceSyncState{
 		TaskID:               task.ID,
-		ReviewRequestID:      rid,
-		LastReviewStatus:     "pending_approval",
-		LastReviewHTTPStatus: http.StatusOK,
+		GovernanceRequestID:      rid,
+		LastGovernanceStatus:     "pending_approval",
+		LastGovernanceHTTPStatus: http.StatusOK,
 		LastCheckedAt:        time.Now().UTC().Add(-time.Minute),
 		LastError:            "",
 		ConsecutiveFailures:  0,
@@ -708,25 +708,25 @@ func TestUsecases_SyncTaskReview_errorBackoffThenReset(t *testing.T) {
 		CreatedAt:            time.Now().UTC().Add(-time.Minute),
 		UpdatedAt:            time.Now().UTC().Add(-time.Minute),
 	}
-	rev := &stubReview{
-		getFn: func(ctx context.Context, id string) (reviewclient.RequestSummary, int, error) {
-			return reviewclient.RequestSummary{}, http.StatusBadGateway, errors.New("review unavailable")
+	rev := &stubGovernance{
+		getFn: func(ctx context.Context, id string) (governanceclient.RequestSummary, int, error) {
+			return governanceclient.RequestSummary{}, http.StatusBadGateway, errors.New("governance unavailable")
 		},
 	}
 	uc := NewUsecases(repo, rev)
-	uc.SetReviewSyncInterval(2 * time.Second)
+	uc.SetGovernanceSyncInterval(2 * time.Second)
 
-	if _, err := uc.SyncTaskReview(ctx, task.ID); err == nil {
+	if _, err := uc.SyncTaskGovernance(ctx, task.ID); err == nil {
 		t.Fatal("expected sync error")
 	}
-	state, err := repo.GetReviewSyncState(ctx, task.ID)
+	state, err := repo.GetGovernanceSyncState(ctx, task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if state.ConsecutiveFailures != 1 {
 		t.Fatalf("expected 1 failure, got %d", state.ConsecutiveFailures)
 	}
-	if !strings.Contains(state.LastError, "review unavailable") {
+	if !strings.Contains(state.LastError, "governance unavailable") {
 		t.Fatalf("unexpected error %q", state.LastError)
 	}
 	firstBackoff := state.NextCheckAt
@@ -734,20 +734,20 @@ func TestUsecases_SyncTaskReview_errorBackoffThenReset(t *testing.T) {
 		t.Fatalf("expected next_check_at to advance, got %s", firstBackoff)
 	}
 
-	rev.getFn = func(ctx context.Context, id string) (reviewclient.RequestSummary, int, error) {
-		return reviewclient.RequestSummary{ID: rid.String(), Status: "pending_approval"}, http.StatusOK, nil
+	rev.getFn = func(ctx context.Context, id string) (governanceclient.RequestSummary, int, error) {
+		return governanceclient.RequestSummary{ID: rid.String(), Status: "pending_approval"}, http.StatusOK, nil
 	}
 	state.NextCheckAt = time.Now().UTC().Add(-time.Second)
-	repo.reviewSync[task.ID] = state
+	repo.governanceSync[task.ID] = state
 
-	out, err := uc.SyncTaskReview(ctx, task.ID)
+	out, err := uc.SyncTaskGovernance(ctx, task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if out.Status != domain.TaskStatusWaitingForApproval {
 		t.Fatalf("expected waiting_for_approval, got %q", out.Status)
 	}
-	state, err = repo.GetReviewSyncState(ctx, task.ID)
+	state, err = repo.GetGovernanceSyncState(ctx, task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -759,13 +759,13 @@ func TestUsecases_SyncTaskReview_errorBackoffThenReset(t *testing.T) {
 	}
 }
 
-func TestUsecases_SyncPendingReviewTasks_syncsOnlyEligibleTasks(t *testing.T) {
+func TestUsecases_SyncPendingGovernanceTasks_syncsOnlyEligibleTasks(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	repo := &fakeRepo{reviewSync: make(map[uuid.UUID]domain.TaskReviewSyncState)}
+	repo := &fakeRepo{governanceSync: make(map[uuid.UUID]domain.TaskGovernanceSyncState)}
 	eligible := createWaitingTask(t, repo)
 	notDue := createWaitingTask(t, repo)
-	doneTask, err := NewUsecases(repo, &stubReview{}).Create(ctx, CreateTaskInput{Title: "done"})
+	doneTask, err := NewUsecases(repo, &stubGovernance{}).Create(ctx, CreateTaskInput{Title: "done"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -778,41 +778,41 @@ func TestUsecases_SyncPendingReviewTasks_syncsOnlyEligibleTasks(t *testing.T) {
 	eligibleRID := uuid.New()
 	notDueRID := uuid.New()
 	now := time.Now().UTC()
-	repo.reviewSync[eligible.ID] = domain.TaskReviewSyncState{
+	repo.governanceSync[eligible.ID] = domain.TaskGovernanceSyncState{
 		TaskID:               eligible.ID,
-		ReviewRequestID:      eligibleRID,
-		LastReviewStatus:     "pending_approval",
-		LastReviewHTTPStatus: http.StatusOK,
+		GovernanceRequestID:      eligibleRID,
+		LastGovernanceStatus:     "pending_approval",
+		LastGovernanceHTTPStatus: http.StatusOK,
 		LastCheckedAt:        now.Add(-time.Minute),
 		NextCheckAt:          now.Add(-time.Second),
 		CreatedAt:            now.Add(-time.Minute),
 		UpdatedAt:            now.Add(-time.Minute),
 	}
-	repo.reviewSync[notDue.ID] = domain.TaskReviewSyncState{
+	repo.governanceSync[notDue.ID] = domain.TaskGovernanceSyncState{
 		TaskID:               notDue.ID,
-		ReviewRequestID:      notDueRID,
-		LastReviewStatus:     "pending_approval",
-		LastReviewHTTPStatus: http.StatusOK,
+		GovernanceRequestID:      notDueRID,
+		LastGovernanceStatus:     "pending_approval",
+		LastGovernanceHTTPStatus: http.StatusOK,
 		LastCheckedAt:        now.Add(-time.Minute),
 		NextCheckAt:          now.Add(time.Minute),
 		CreatedAt:            now.Add(-time.Minute),
 		UpdatedAt:            now.Add(-time.Minute),
 	}
 
-	uc := NewUsecases(repo, &stubReview{
-		getFn: func(ctx context.Context, id string) (reviewclient.RequestSummary, int, error) {
+	uc := NewUsecases(repo, &stubGovernance{
+		getFn: func(ctx context.Context, id string) (governanceclient.RequestSummary, int, error) {
 			switch id {
 			case eligibleRID.String():
-				return reviewclient.RequestSummary{ID: eligibleRID.String(), Status: "approved"}, http.StatusOK, nil
+				return governanceclient.RequestSummary{ID: eligibleRID.String(), Status: "approved"}, http.StatusOK, nil
 			case notDueRID.String():
-				return reviewclient.RequestSummary{ID: notDueRID.String(), Status: "rejected"}, http.StatusOK, nil
+				return governanceclient.RequestSummary{ID: notDueRID.String(), Status: "rejected"}, http.StatusOK, nil
 			default:
-				return reviewclient.RequestSummary{}, http.StatusNotFound, nil
+				return governanceclient.RequestSummary{}, http.StatusNotFound, nil
 			}
 		},
 	})
 
-	uc.SyncPendingReviewTasks(ctx, 10)
+	uc.SyncPendingGovernanceTasks(ctx, 10)
 
 	eligibleOut, err := repo.GetTaskByID(ctx, eligible.ID)
 	if err != nil {
@@ -843,25 +843,25 @@ func TestUsecases_ExecuteTask_success(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	repo := &fakeRepo{
-		reviewSync:     make(map[uuid.UUID]domain.TaskReviewSyncState),
+		governanceSync:     make(map[uuid.UUID]domain.TaskGovernanceSyncState),
 		executionPlan:  make(map[uuid.UUID]domain.TaskExecutionPlan),
 		executionState: make(map[uuid.UUID]domain.TaskExecutionState),
 	}
-	task, err := NewUsecases(repo, &stubReview{}).Create(ctx, CreateTaskInput{Title: "execute"})
+	task, err := NewUsecases(repo, &stubGovernance{}).Create(ctx, CreateTaskInput{Title: "execute"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	task.Status = domain.TaskStatusWaitingForInput
-	task.ReviewStatus = "approved"
+	task.GovernanceStatus = "approved"
 	task, err = repo.UpdateTask(ctx, task)
 	if err != nil {
 		t.Fatal(err)
 	}
-	reviewRequestID := uuid.New()
-	repo.reviewSync[task.ID] = domain.TaskReviewSyncState{
+	governanceRequestID := uuid.New()
+	repo.governanceSync[task.ID] = domain.TaskGovernanceSyncState{
 		TaskID:           task.ID,
-		ReviewRequestID:  reviewRequestID,
-		LastReviewStatus: "approved",
+		GovernanceRequestID:  governanceRequestID,
+		LastGovernanceStatus: "approved",
 		LastCheckedAt:    time.Now().UTC(),
 		NextCheckAt:      time.Now().UTC().Add(time.Minute),
 		CreatedAt:        time.Now().UTC(),
@@ -879,7 +879,7 @@ func TestUsecases_ExecuteTask_success(t *testing.T) {
 	repo.executionPlan[task.ID] = plan
 
 	var gotSpec connectordomain.ExecutionSpec
-	uc := NewUsecases(repo, &stubReview{})
+	uc := NewUsecases(repo, &stubGovernance{})
 	mem := &stubTaskMemory{}
 	uc.SetTaskMemory(mem)
 	uc.SetExecutor(&stubExecutor{
@@ -894,7 +894,7 @@ func TestUsecases_ExecuteTask_success(t *testing.T) {
 				Payload:         spec.Payload,
 				ResultJSON:      json.RawMessage(`{"sent":true}`),
 				TaskID:          spec.TaskID,
-				ReviewRequestID: spec.ReviewRequestID,
+				GovernanceRequestID: spec.GovernanceRequestID,
 				CreatedAt:       time.Now().UTC(),
 			}, nil
 		},
@@ -922,8 +922,8 @@ func TestUsecases_ExecuteTask_success(t *testing.T) {
 	if gotSpec.IdempotencyKey != "exec-1" {
 		t.Fatalf("expected stored idempotency key, got %q", gotSpec.IdempotencyKey)
 	}
-	if gotSpec.ReviewRequestID == nil || *gotSpec.ReviewRequestID != reviewRequestID {
-		t.Fatalf("unexpected review request id %+v", gotSpec.ReviewRequestID)
+	if gotSpec.GovernanceRequestID == nil || *gotSpec.GovernanceRequestID != governanceRequestID {
+		t.Fatalf("unexpected governance request id %+v", gotSpec.GovernanceRequestID)
 	}
 	if out.ExecutionState.Retryable {
 		t.Fatal("expected non-retryable execution state after verified success")
@@ -944,16 +944,16 @@ func TestUsecases_ExecuteTask_failureMarksTaskFailed(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	repo := &fakeRepo{
-		reviewSync:     make(map[uuid.UUID]domain.TaskReviewSyncState),
+		governanceSync:     make(map[uuid.UUID]domain.TaskGovernanceSyncState),
 		executionPlan:  make(map[uuid.UUID]domain.TaskExecutionPlan),
 		executionState: make(map[uuid.UUID]domain.TaskExecutionState),
 	}
-	task, err := NewUsecases(repo, &stubReview{}).Create(ctx, CreateTaskInput{Title: "execute failure"})
+	task, err := NewUsecases(repo, &stubGovernance{}).Create(ctx, CreateTaskInput{Title: "execute failure"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	task.Status = domain.TaskStatusWaitingForInput
-	task.ReviewStatus = "approved"
+	task.GovernanceStatus = "approved"
 	task, err = repo.UpdateTask(ctx, task)
 	if err != nil {
 		t.Fatal(err)
@@ -967,7 +967,7 @@ func TestUsecases_ExecuteTask_failureMarksTaskFailed(t *testing.T) {
 		UpdatedAt:   time.Now().UTC(),
 	}
 
-	uc := NewUsecases(repo, &stubReview{})
+	uc := NewUsecases(repo, &stubGovernance{})
 	uc.SetExecutor(&stubExecutor{
 		executeFn: func(ctx context.Context, spec connectordomain.ExecutionSpec) (connectordomain.ExecutionResult, error) {
 			return connectordomain.ExecutionResult{}, errors.New("connector unavailable")
@@ -1002,25 +1002,25 @@ func TestUsecases_ExecuteTask_verificationFailureMarksTaskFailed(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	repo := &fakeRepo{
-		reviewSync:     make(map[uuid.UUID]domain.TaskReviewSyncState),
+		governanceSync:     make(map[uuid.UUID]domain.TaskGovernanceSyncState),
 		executionPlan:  make(map[uuid.UUID]domain.TaskExecutionPlan),
 		executionState: make(map[uuid.UUID]domain.TaskExecutionState),
 	}
-	task, err := NewUsecases(repo, &stubReview{}).Create(ctx, CreateTaskInput{Title: "verification failure"})
+	task, err := NewUsecases(repo, &stubGovernance{}).Create(ctx, CreateTaskInput{Title: "verification failure"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	task.Status = domain.TaskStatusWaitingForInput
-	task.ReviewStatus = "approved"
+	task.GovernanceStatus = "approved"
 	task, err = repo.UpdateTask(ctx, task)
 	if err != nil {
 		t.Fatal(err)
 	}
-	reviewRequestID := uuid.New()
-	repo.reviewSync[task.ID] = domain.TaskReviewSyncState{
+	governanceRequestID := uuid.New()
+	repo.governanceSync[task.ID] = domain.TaskGovernanceSyncState{
 		TaskID:           task.ID,
-		ReviewRequestID:  reviewRequestID,
-		LastReviewStatus: "approved",
+		GovernanceRequestID:  governanceRequestID,
+		LastGovernanceStatus: "approved",
 		LastCheckedAt:    time.Now().UTC(),
 		NextCheckAt:      time.Now().UTC().Add(time.Minute),
 		CreatedAt:        time.Now().UTC(),
@@ -1035,7 +1035,7 @@ func TestUsecases_ExecuteTask_verificationFailureMarksTaskFailed(t *testing.T) {
 		UpdatedAt:   time.Now().UTC(),
 	}
 
-	uc := NewUsecases(repo, &stubReview{})
+	uc := NewUsecases(repo, &stubGovernance{})
 	uc.SetExecutor(&stubExecutor{
 		executeFn: func(ctx context.Context, spec connectordomain.ExecutionSpec) (connectordomain.ExecutionResult, error) {
 			return connectordomain.ExecutionResult{
@@ -1046,7 +1046,7 @@ func TestUsecases_ExecuteTask_verificationFailureMarksTaskFailed(t *testing.T) {
 				Payload:         spec.Payload,
 				ResultJSON:      json.RawMessage(`{}`),
 				TaskID:          spec.TaskID,
-				ReviewRequestID: spec.ReviewRequestID,
+				GovernanceRequestID: spec.GovernanceRequestID,
 				CreatedAt:       time.Now().UTC(),
 			}, nil
 		},
@@ -1071,28 +1071,28 @@ func TestUsecases_RetryTask_reexecutesRetryableFailure(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	repo := &fakeRepo{
-		reviewSync:     make(map[uuid.UUID]domain.TaskReviewSyncState),
+		governanceSync:     make(map[uuid.UUID]domain.TaskGovernanceSyncState),
 		executionPlan:  make(map[uuid.UUID]domain.TaskExecutionPlan),
 		executionState: make(map[uuid.UUID]domain.TaskExecutionState),
 	}
-	task, err := NewUsecases(repo, &stubReview{}).Create(ctx, CreateTaskInput{Title: "retry execution"})
+	task, err := NewUsecases(repo, &stubGovernance{}).Create(ctx, CreateTaskInput{Title: "retry execution"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
 	task.Status = domain.TaskStatusFailed
-	task.ReviewStatus = "approved"
+	task.GovernanceStatus = "approved"
 	task.ClosedAt = &now
 	task, err = repo.UpdateTask(ctx, task)
 	if err != nil {
 		t.Fatal(err)
 	}
-	reviewRequestID := uuid.New()
-	repo.reviewSync[task.ID] = domain.TaskReviewSyncState{
+	governanceRequestID := uuid.New()
+	repo.governanceSync[task.ID] = domain.TaskGovernanceSyncState{
 		TaskID:               task.ID,
-		ReviewRequestID:      reviewRequestID,
-		LastReviewStatus:     "approved",
-		LastReviewHTTPStatus: http.StatusOK,
+		GovernanceRequestID:      governanceRequestID,
+		LastGovernanceStatus:     "approved",
+		LastGovernanceHTTPStatus: http.StatusOK,
 		LastCheckedAt:        now,
 		NextCheckAt:          now.Add(time.Minute),
 		CreatedAt:            now,
@@ -1125,9 +1125,9 @@ func TestUsecases_RetryTask_reexecutesRetryableFailure(t *testing.T) {
 		UpdatedAt: now,
 	}
 
-	uc := NewUsecases(repo, &stubReview{
-		getFn: func(ctx context.Context, id string) (reviewclient.RequestSummary, int, error) {
-			return reviewclient.RequestSummary{ID: reviewRequestID.String(), Status: "approved"}, http.StatusOK, nil
+	uc := NewUsecases(repo, &stubGovernance{
+		getFn: func(ctx context.Context, id string) (governanceclient.RequestSummary, int, error) {
+			return governanceclient.RequestSummary{ID: governanceRequestID.String(), Status: "approved"}, http.StatusOK, nil
 		},
 	})
 	uc.SetExecutor(&stubExecutor{
@@ -1141,7 +1141,7 @@ func TestUsecases_RetryTask_reexecutesRetryableFailure(t *testing.T) {
 				Payload:         spec.Payload,
 				ResultJSON:      json.RawMessage(`{"ok":true}`),
 				TaskID:          spec.TaskID,
-				ReviewRequestID: spec.ReviewRequestID,
+				GovernanceRequestID: spec.GovernanceRequestID,
 				CreatedAt:       time.Now().UTC(),
 			}, nil
 		},
