@@ -66,6 +66,28 @@ func watcherInterval() time.Duration {
 	return envconfig.Duration("COMPANION_WATCHER_INTERVAL_SEC", 0)
 }
 
+// reviewGateEnforced lee el feature flag que activa el typed error
+// ErrReviewNotApproved (HTTP 412) en path de tasks. Default false: el caller
+// recibe ErrInvalidTaskState (HTTP 409) como antes. Activar a true en staging
+// y producción una vez verificado el comportamiento.
+func reviewGateEnforced() bool {
+	return envconfig.Bool("COMPANION_REVIEW_GATE_ENFORCED", false)
+}
+
+// defaultAutonomyLevel lee el nivel de autonomía base del runtime desde env
+// (COMPANION_DEFAULT_AUTONOMY_LEVEL). Acepta A0..A5; cualquier otro valor causa
+// fail-fast en boot para evitar arrancar con configuración ambigua. Default A2.
+func defaultAutonomyLevel() (runtime.AutonomyLevel, error) {
+	raw := envconfig.Get("COMPANION_DEFAULT_AUTONOMY_LEVEL", "A2")
+	switch runtime.AutonomyLevel(raw) {
+	case runtime.AutonomyA0, runtime.AutonomyA1, runtime.AutonomyA2,
+		runtime.AutonomyA3, runtime.AutonomyA4, runtime.AutonomyA5:
+		return runtime.AutonomyLevel(raw), nil
+	default:
+		return "", fmt.Errorf("invalid COMPANION_DEFAULT_AUTONOMY_LEVEL=%q (expected A0..A5)", raw)
+	}
+}
+
 // Config arranque del servicio Companion.
 type Config struct {
 	DatabaseURL       string
@@ -76,6 +98,8 @@ type Config struct {
 	GovernanceAPIKey  string
 	PymesBaseURL      string
 	PymesAPIKey       string
+	PontiBaseURL      string
+	PontiAPIKey       string
 	LLMProvider       string
 	LLMAPIKey         string
 	LLMModel          string
@@ -106,6 +130,10 @@ func NewServer(cfg Config) (http.Handler, func(), error) {
 	if cfg.PymesBaseURL != "" {
 		connReg.Register(registry.NewPymesConnector(pymesClient))
 	}
+	if cfg.PontiBaseURL != "" {
+		pontiClient := registry.NewPontiClient(cfg.PontiBaseURL, cfg.PontiAPIKey)
+		connReg.Register(registry.NewPontiConnector(pontiClient))
+	}
 	connRepo := connectors.NewPostgresRepository(db)
 	reviewChecker := connectors.NewReviewCheckerAdapter(func(c context.Context, id uuid.UUID) (string, string, int, error) {
 		return governanceGateway.GetRequestMeta(c, id.String())
@@ -116,6 +144,7 @@ func NewServer(cfg Config) (http.Handler, func(), error) {
 	repo := tasks.NewPostgresRepository(db)
 	uc := tasks.NewUsecases(repo, governanceGateway)
 	uc.SetReviewSyncInterval(governanceSyncInterval())
+	uc.SetReviewGateEnforced(reviewGateEnforced())
 	uc.SetExecutor(connUC)
 	h := tasks.NewHandler(uc)
 
@@ -140,6 +169,15 @@ func NewServer(cfg Config) (http.Handler, func(), error) {
 		},
 	}
 	orchestrator := runtime.NewOrchestrator(llmProvider, toolkit, contextPorts)
+	autonomy, err := defaultAutonomyLevel()
+	if err != nil {
+		db.Close()
+		return nil, nil, err
+	}
+	orchestrator.SetDefaultAutonomy(autonomy)
+	traceRepo := runtime.NewPostgresTraceRepository(db)
+	orchestrator.SetTraceRepository(traceRepo)
+	traceHandler := runtime.NewTraceHandler(traceRepo)
 	adapter := runtime.NewOrchestratorAdapter(orchestrator)
 	uc.SetOrchestrator(adapter)
 	// Watchers empujan alertas al chat del suscriptor
@@ -154,6 +192,7 @@ func NewServer(cfg Config) (http.Handler, func(), error) {
 	watcherHandler.Register(mux)
 	memHandler.Register(mux)
 	connHandler.Register(mux)
+	traceHandler.Register(mux)
 
 	// Seed conectores por defecto
 	if err := connUC.SeedDefaultConnectors(ctx); err != nil {

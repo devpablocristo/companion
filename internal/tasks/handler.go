@@ -386,6 +386,9 @@ func (h *Handler) execute(w http.ResponseWriter, r *http.Request) {
 			httpjson.WriteFlatError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
 			return
 		}
+		if writeReviewBlocked(w, err) {
+			return
+		}
 		if IsInvalidTaskState(err) {
 			httpjson.WriteFlatError(w, http.StatusConflict, "CONFLICT", "invalid task state")
 			return
@@ -420,6 +423,9 @@ func (h *Handler) retry(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if IsNotFound(err) {
 			httpjson.WriteFlatError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
+			return
+		}
+		if writeReviewBlocked(w, err) {
 			return
 		}
 		if IsInvalidTaskState(err) {
@@ -472,11 +478,12 @@ func (h *Handler) chat(w http.ResponseWriter, r *http.Request) {
 	orgID := strings.TrimSpace(r.Header.Get("X-Org-ID"))
 
 	result, err := h.uc.Chat(r.Context(), ChatInput{
-		TaskID:  taskID,
-		UserID:  userID,
-		OrgID:   orgID,
-		Message: body.Message,
-		Channel: body.Channel,
+		TaskID:         taskID,
+		UserID:         userID,
+		OrgID:          orgID,
+		Message:        body.Message,
+		Channel:        body.Channel,
+		ProductSurface: body.ProductSurface,
 	})
 	if err != nil {
 		if IsNotFound(err) {
@@ -511,5 +518,24 @@ func (h *Handler) authorizeTaskOrg(w http.ResponseWriter, r *http.Request, id uu
 		httpjson.WriteFlatError(w, http.StatusForbidden, "FORBIDDEN", "task org is not allowed for this principal")
 		return false
 	}
+	return true
+}
+
+// writeReviewBlocked detecta el typed error ErrReviewNotApproved y escribe
+// HTTP 412 (precondition_failed) con review_request_id y review_status en el
+// body para que el caller pueda actuar (esperar, refrescar, escalar).
+// Devuelve true si manejó el error.
+func writeReviewBlocked(w http.ResponseWriter, err error) bool {
+	blocked, ok := AsReviewBlocked(err)
+	if !ok {
+		return false
+	}
+	httpjson.WriteJSON(w, http.StatusPreconditionFailed, map[string]any{
+		"code":              "REVIEW_NOT_APPROVED",
+		"message":           "execution requires the linked review to be approved",
+		"review_request_id": blocked.ReviewRequestID,
+		"review_status":     blocked.ReviewStatus,
+		"reason":            blocked.Reason,
+	})
 	return true
 }

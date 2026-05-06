@@ -53,6 +53,8 @@ func main() {
 		GovernanceAPIKey:  governanceKey,
 		PymesBaseURL:      os.Getenv("PYMES_BASE_URL"),
 		PymesAPIKey:       os.Getenv("PYMES_API_KEY"),
+		PontiBaseURL:      os.Getenv("PONTI_BASE_URL"),
+		PontiAPIKey:       os.Getenv("PONTI_API_KEY"),
 		LLMProvider:       os.Getenv("COMPANION_LLM_PROVIDER"),
 		LLMAPIKey:         os.Getenv("COMPANION_LLM_API_KEY"),
 		LLMModel:          os.Getenv("COMPANION_LLM_MODEL"),

@@ -80,10 +80,12 @@ type ChatOrchestrator interface {
 
 // OrchestratorInput entrada para el runtime.
 type OrchestratorInput struct {
-	UserID   string
-	OrgID    string
-	Message  string
-	Messages []domain.TaskMessage
+	UserID         string
+	OrgID          string
+	Message        string
+	Messages       []domain.TaskMessage
+	TaskID         *uuid.UUID // opcional: vincula el trace a una task
+	ProductSurface string     // opcional: "companion" (default) | "ponti" | "pymes" — afecta routing
 }
 
 // OrchestratorResult resultado del runtime.
@@ -99,6 +101,11 @@ type Usecases struct {
 	executor           taskExecutor
 	taskMemory         taskMemoryWriter
 	reviewSyncInterval time.Duration
+	// reviewGateEnforced controla si writes bloqueados por review
+	// devuelven ErrReviewNotApproved (true → handler retorna HTTP 412
+	// con detalle) o ErrInvalidTaskState genérico (false → comportamiento
+	// legacy con HTTP 409). Default false para rollout gradual.
+	reviewGateEnforced bool
 }
 
 func NewUsecases(repo Repository, governance governanceGateway) *Usecases {
@@ -120,6 +127,14 @@ func (u *Usecases) SetExecutor(executor taskExecutor) {
 
 func (u *Usecases) SetTaskMemory(writer taskMemoryWriter) {
 	u.taskMemory = writer
+}
+
+// SetReviewGateEnforced activa el typed error ErrReviewNotApproved (HTTP 412)
+// para writes bloqueados por una review no aprobada. Default false: el caller
+// recibe ErrInvalidTaskState como antes. Activar via env var
+// COMPANION_REVIEW_GATE_ENFORCED=true en producción una vez verificado.
+func (u *Usecases) SetReviewGateEnforced(enforced bool) {
+	u.reviewGateEnforced = enforced
 }
 
 func (u *Usecases) SetReviewSyncInterval(interval time.Duration) {
@@ -288,11 +303,12 @@ func (u *Usecases) AddMessage(ctx context.Context, taskID uuid.UUID, in AddMessa
 
 // ChatInput entrada para el endpoint de chat conversacional.
 type ChatInput struct {
-	TaskID  *uuid.UUID // nil = crear tarea nueva
-	UserID  string
-	OrgID   string
-	Message string
-	Channel string // "console", "api", etc.
+	TaskID         *uuid.UUID // nil = crear tarea nueva
+	UserID         string
+	OrgID          string
+	Message        string
+	Channel        string // "console", "api", etc.
+	ProductSurface string // opcional: "companion" | "ponti" | "pymes". Afecta routing del agent.
 }
 
 // ChatResult resultado del chat.
@@ -362,11 +378,14 @@ func (u *Usecases) Chat(ctx context.Context, in ChatInput) (ChatResult, error) {
 			if orgID == "" {
 				orgID = t.CreatedBy // fallback si no viene en el request
 			}
+			taskID := t.ID
 			result, runErr := u.orchestrator.Run(ctx, OrchestratorInput{
-				UserID:   in.UserID,
-				OrgID:    orgID,
-				Message:  in.Message,
-				Messages: existingMsgs,
+				UserID:         in.UserID,
+				OrgID:          orgID,
+				Message:        in.Message,
+				Messages:       existingMsgs,
+				TaskID:         &taskID,
+				ProductSurface: in.ProductSurface,
 			})
 			if runErr != nil {
 				slog.Error("orchestrator failed", "error", runErr)
@@ -1541,12 +1560,14 @@ func (u *Usecases) ExecuteTask(ctx context.Context, taskID uuid.UUID) (ExecuteTa
 		return out, err
 	}
 
+	var reviewRequestID string
 	if t.Status == domain.TaskStatusWaitingForApproval {
 		syncedTask, state, syncErr := u.syncTaskWithReview(ctx, t, "execute")
 		if state != nil {
 			syncedTask.ReviewStatus = state.LastReviewStatus
 			syncedTask.ReviewLastCheckedAt = &state.LastCheckedAt
 			syncedTask.ReviewSyncError = state.LastError
+			reviewRequestID = state.ReviewRequestID.String()
 		}
 		if syncErr != nil {
 			return out, syncErr
@@ -1554,7 +1575,10 @@ func (u *Usecases) ExecuteTask(ctx context.Context, taskID uuid.UUID) (ExecuteTa
 		t = syncedTask
 	}
 
-	if !isApprovedReviewStatus(t.ReviewStatus) || t.Status != domain.TaskStatusWaitingForInput {
+	if !isApprovedReviewStatus(t.ReviewStatus) {
+		return out, u.reviewBlockedError(reviewRequestID, t.ReviewStatus, "execute")
+	}
+	if t.Status != domain.TaskStatusWaitingForInput {
 		return out, ErrInvalidTaskState
 	}
 
@@ -1601,7 +1625,7 @@ func (u *Usecases) RetryTask(ctx context.Context, taskID uuid.UUID) (ExecuteTask
 	t.ReviewLastCheckedAt = &snapshot.LastCheckedAt
 	t.ReviewSyncError = snapshot.LastError
 	if !isApprovedReviewStatus(snapshot.LastReviewStatus) {
-		return out, ErrInvalidTaskState
+		return out, u.reviewBlockedError(snapshot.ReviewRequestID.String(), snapshot.LastReviewStatus, "retry")
 	}
 
 	payload := marshalOrEmpty("retry_execution_action", map[string]any{
@@ -1677,6 +1701,26 @@ func IsNotFound(err error) bool {
 // IsInvalidTaskState indica conflicto de estado (FSM / reglas de negocio).
 func IsInvalidTaskState(err error) bool {
 	return errors.Is(err, ErrInvalidTaskState)
+}
+
+// reviewBlockedError construye el error apropiado cuando una operación de
+// task se bloquea porque la review en Nexus no está aprobada.
+//
+// Cuando reviewGateEnforced=true, devuelve un *ReviewBlockedError con
+// detalle (review_request_id, status). El handler lo mapea a HTTP 412.
+//
+// Cuando reviewGateEnforced=false (default), devuelve ErrInvalidTaskState
+// para preservar el comportamiento legacy (HTTP 409). El gate sigue
+// bloqueando la ejecución; sólo cambia el shape del error que ve el caller.
+func (u *Usecases) reviewBlockedError(reviewRequestID, reviewStatus, reason string) error {
+	if !u.reviewGateEnforced {
+		return ErrInvalidTaskState
+	}
+	return &ReviewBlockedError{
+		ReviewRequestID: reviewRequestID,
+		ReviewStatus:    reviewStatus,
+		Reason:          reason,
+	}
 }
 
 // NotifyAlert implementa watchers.ChatNotifier.

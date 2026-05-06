@@ -6,6 +6,7 @@ const translations = {
     home: 'Home',
     inbox: 'Inbox',
     replay: 'Replay',
+    runTraces: 'Run Traces',
     learning: 'Learning',
     dashboard: 'Dashboard',
 
@@ -394,6 +395,7 @@ const translations = {
     home: 'Home',
     inbox: 'Bandeja',
     replay: 'Replay',
+    runTraces: 'Run Traces',
     learning: 'Aprendizaje',
     dashboard: 'Panel',
 

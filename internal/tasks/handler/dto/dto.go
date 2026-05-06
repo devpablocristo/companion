@@ -126,9 +126,10 @@ type AddMessageRequest struct {
 
 // ChatRequest endpoint conversacional para el suscriptor.
 type ChatRequest struct {
-	TaskID  string `json:"task_id,omitempty"` // vacío = crear nueva conversación
-	Message string `json:"message"`
-	Channel string `json:"channel,omitempty"` // "console", "api"
+	TaskID         string `json:"task_id,omitempty"` // vacío = crear nueva conversación
+	Message        string `json:"message"`
+	Channel        string `json:"channel,omitempty"`         // "console", "api"
+	ProductSurface string `json:"product_surface,omitempty"` // "companion" | "ponti" | "pymes"
 }
 
 // ChatResponse respuesta del chat con tarea y mensajes.

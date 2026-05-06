@@ -79,9 +79,14 @@ func BuildIdentityChain(userID, orgID, productSurface string) IdentityChain {
 	}
 }
 
-func RouteAgent(message, productSurface string, toolkit *ToolKit) AgentRoute {
+// RouteAgent clasifica intent y devuelve la ruta del agente. defaultAutonomy
+// puede ser "" (vacío), en cuyo caso se asume A2.
+func RouteAgent(message, productSurface string, toolkit *ToolKit, defaultAutonomy AutonomyLevel) AgentRoute {
 	intent := classifyIntent(message)
-	autonomy := AutonomyA2
+	autonomy := defaultAutonomy
+	if autonomy == "" {
+		autonomy = AutonomyA2
+	}
 	var tools []string
 	if toolkit != nil {
 		tools = make([]string, 0, len(toolkit.Schemas))

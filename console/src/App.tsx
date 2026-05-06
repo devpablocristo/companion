@@ -10,6 +10,7 @@ import Sandbox from './views/Sandbox'
 import ActionTypes from './views/ActionTypes'
 import Agents from './views/Agents'
 import Replay from './views/Replay'
+import RunTraces from './views/RunTraces'
 import Tasks from './views/Tasks'
 import Memory from './views/Memory'
 import Connectors from './views/Connectors'
@@ -26,7 +27,7 @@ const areas = [
   },
   {
     key: 'areaGovernance',
-    tabs: ['requests', 'replay'],
+    tabs: ['requests', 'replay', 'runTraces'],
   },
   {
     key: 'areaOperations',
@@ -130,6 +131,7 @@ export default function App() {
           {view === 'requests' && <Requests lang={lang} />}
           {view === 'tasks' && <Tasks lang={lang} focusTaskId={taskFocusId} onViewReplay={viewReplay} />}
           {view === 'replay' && <Replay lang={lang} requestId={replayRequestId} onViewTask={viewTask} />}
+          {view === 'runTraces' && <RunTraces />}
           {view === 'policies' && <Policies lang={lang} />}
           {view === 'actionTypes' && <ActionTypes lang={lang} />}
           {view === 'agents' && <Agents lang={lang} />}

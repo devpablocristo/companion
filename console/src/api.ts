@@ -187,8 +187,26 @@ export const deleteCompanionMemory = (id: string) =>
   companionRequest(`/companion/v1/memory/${id}`, { method: 'DELETE' })
 
 // Companion — Chat (interfaz conversacional del suscriptor)
-export const sendChatMessage = (message: string, taskId?: string, channel = 'console') =>
+export const sendChatMessage = (
+  message: string,
+  taskId?: string,
+  channel = 'console',
+  productSurface?: string,
+) =>
   companionRequest('/companion/v1/chat', {
     method: 'POST',
-    body: JSON.stringify({ message, task_id: taskId || undefined, channel }),
+    body: JSON.stringify({
+      message,
+      task_id: taskId || undefined,
+      channel,
+      product_surface: productSurface || undefined,
+    }),
   })
+
+// Companion — Run Traces (replay del runtime)
+export const fetchCompanionRunTrace = (runId: string) =>
+  companionRequest(`/companion/v1/run-traces/${runId}`)
+export const fetchCompanionRunTracesByOrg = (limit = 50) =>
+  companionRequest(`/companion/v1/run-traces?limit=${limit}`)
+export const fetchCompanionRunTracesByTask = (taskId: string) =>
+  companionRequest(`/companion/v1/run-traces?task_id=${encodeURIComponent(taskId)}`)

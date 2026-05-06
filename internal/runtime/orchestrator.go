@@ -16,9 +16,11 @@ const maxToolRounds = 5
 
 // Orchestrator coordina LLM + tools + context para producir la respuesta del compañero.
 type Orchestrator struct {
-	provider LLMProvider
-	toolkit  *ToolKit
-	ports    ContextPorts
+	provider         LLMProvider
+	toolkit          *ToolKit
+	ports            ContextPorts
+	traces           TraceRepository // opcional; nil = no persiste (uso en tests)
+	defaultAutonomy  AutonomyLevel   // "" → A2 (default conservador)
 }
 
 // NewOrchestrator crea el orquestador del runtime.
@@ -30,6 +32,17 @@ func NewOrchestrator(provider LLMProvider, toolkit *ToolKit, ports ContextPorts)
 	}
 }
 
+// SetTraceRepository inyecta el repositorio de persistencia de traces. Opcional.
+func (o *Orchestrator) SetTraceRepository(repo TraceRepository) {
+	o.traces = repo
+}
+
+// SetDefaultAutonomy fija el nivel de autonomía por defecto del runtime.
+// "" se trata como A2. Niveles fuera de A0..A5 se ignoran (queda A2).
+func (o *Orchestrator) SetDefaultAutonomy(level AutonomyLevel) {
+	o.defaultAutonomy = level
+}
+
 // RunInput entrada para ejecutar el orquestador.
 type RunInput struct {
 	UserID         string
@@ -37,6 +50,7 @@ type RunInput struct {
 	ProductSurface string
 	Message        string
 	Messages       []taskdomain.TaskMessage // hilo completo hasta ahora
+	TaskID         *uuid.UUID               // opcional: vincula el trace a una task
 }
 
 // RunResult resultado del orquestador.
@@ -51,7 +65,7 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput) (RunResult, error) 
 	if productSurface == "" {
 		productSurface = DefaultProductSurface
 	}
-	route := RouteAgent(in.Message, productSurface, o.toolkit)
+	route := RouteAgent(in.Message, productSurface, o.toolkit, o.defaultAutonomy)
 	trace := RunTrace{
 		RunID:          uuid.NewString(),
 		IdentityChain:  BuildIdentityChain(in.UserID, in.OrgID, productSurface),
@@ -64,6 +78,7 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput) (RunResult, error) 
 		trace.GuardrailEvents = append(trace.GuardrailEvents, *event)
 		trace.CompletedAt = time.Now().UTC()
 		slog.Warn("runtime_guardrail_rejected", "run_id", trace.RunID, "type", event.Type, "reason", event.Reason)
+		o.persistTrace(ctx, trace, in, "")
 		return RunResult{
 			Reply: "No puedo continuar con instrucciones que intentan modificar mis reglas internas. Si necesitás hacer una acción concreta, reformulá el pedido con el objetivo de negocio.",
 			Trace: trace,
@@ -98,6 +113,11 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput) (RunResult, error) 
 			result, fallbackErr := o.fallback(ctx, in)
 			trace.CompletedAt = time.Now().UTC()
 			result.Trace = trace
+			errMsg := ""
+			if err != nil {
+				errMsg = err.Error()
+			}
+			o.persistTrace(ctx, trace, in, errMsg)
 			return result, fallbackErr
 		}
 
@@ -108,6 +128,7 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput) (RunResult, error) 
 				reply = "No pude generar una respuesta en este momento."
 			}
 			trace.CompletedAt = time.Now().UTC()
+			o.persistTrace(ctx, trace, in, "")
 			return RunResult{Reply: reply, Trace: trace}, nil
 		}
 
@@ -182,7 +203,21 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput) (RunResult, error) 
 	result, err := o.fallback(ctx, in)
 	result.Trace = trace
 	result.Trace.CompletedAt = time.Now().UTC()
+	o.persistTrace(ctx, result.Trace, in, "max_tool_rounds_exhausted")
 	return result, err
+}
+
+// persistTrace guarda el trace si hay repo configurado. Falla en silencio (con log) para
+// no bloquear la respuesta al usuario por un problema de persistencia.
+func (o *Orchestrator) persistTrace(ctx context.Context, trace RunTrace, in RunInput, errMsg string) {
+	if o.traces == nil {
+		return
+	}
+	saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
+	if err := o.traces.Save(saveCtx, trace, in.OrgID, in.UserID, in.TaskID, errMsg); err != nil {
+		slog.Error("run_trace_persist_failed", "run_id", trace.RunID, "error", err)
+	}
 }
 
 // fallback genera una respuesta determinista sin LLM.

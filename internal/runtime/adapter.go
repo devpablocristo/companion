@@ -21,10 +21,12 @@ func NewOrchestratorAdapter(orch *Orchestrator) *OrchestratorAdapter {
 // Run implementa tasks.ChatOrchestrator.
 func (a *OrchestratorAdapter) Run(ctx context.Context, in tasks.OrchestratorInput) (tasks.OrchestratorResult, error) {
 	result, err := a.orch.Run(ctx, RunInput{
-		UserID:   in.UserID,
-		OrgID:    in.OrgID,
-		Message:  in.Message,
-		Messages: convertMessages(in.Messages),
+		UserID:         in.UserID,
+		OrgID:          in.OrgID,
+		Message:        in.Message,
+		Messages:       convertMessages(in.Messages),
+		TaskID:         in.TaskID,
+		ProductSurface: in.ProductSurface,
 	})
 	if err != nil {
 		return tasks.OrchestratorResult{}, err

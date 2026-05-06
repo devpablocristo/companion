@@ -17,6 +17,13 @@ type ChatTask = {
   created_at: string
 }
 
+type ProductSurface = 'companion' | 'ponti'
+
+const surfaceOptions: { id: ProductSurface; label: string; hint: string }[] = [
+  { id: 'companion', label: 'Companion', hint: 'general assist' },
+  { id: 'ponti', label: 'Ponti', hint: 'agro insights' },
+]
+
 export default function Chat({ lang }: { lang: string }) {
   const [taskId, setTaskId] = useState<string | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -24,6 +31,7 @@ export default function Chat({ lang }: { lang: string }) {
   const [sending, setSending] = useState(false)
   const [conversations, setConversations] = useState<ChatTask[]>([])
   const [loadingConversations, setLoadingConversations] = useState(true)
+  const [surface, setSurface] = useState<ProductSurface>('companion')
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const scrollToBottom = () => {
@@ -64,7 +72,7 @@ export default function Chat({ lang }: { lang: string }) {
     setMessages((prev) => [...prev, optimistic])
 
     try {
-      const result = await sendChatMessage(msg, taskId || undefined)
+      const result = await sendChatMessage(msg, taskId || undefined, 'console', surface)
       setTaskId(result.task.id)
       setMessages(result.messages || [])
       if (!taskId) {
@@ -145,12 +153,30 @@ export default function Chat({ lang }: { lang: string }) {
       </div>
 
       <div className="flex-1 flex flex-col bg-gray-800 rounded-lg overflow-hidden">
-        <div className="px-4 py-3 border-b border-gray-700">
-          <h2 className="text-white font-medium">
+        <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between gap-3">
+          <h2 className="text-white font-medium truncate">
             {taskId
               ? conversations.find((c) => c.id === taskId)?.title || t(lang, 'chat')
               : t(lang, 'newConversation')}
           </h2>
+          <div className="flex items-center gap-1 text-xs">
+            <span className="text-gray-500 mr-1">surface:</span>
+            {surfaceOptions.map((opt) => (
+              <button
+                key={opt.id}
+                onClick={() => setSurface(opt.id)}
+                disabled={Boolean(taskId)}
+                title={taskId ? 'Cannot change surface mid-conversation; start a new one.' : opt.hint}
+                className={`px-2 py-1 rounded transition-colors ${
+                  surface === opt.id
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                } ${taskId ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
