@@ -14,7 +14,7 @@ require (
 	github.com/devpablocristo/core/observability/go v0.1.0
 	github.com/devpablocristo/core/security/go v0.1.0
 	github.com/google/uuid v1.6.0
-	github.com/jackc/pgx/v5 v5.8.0
+	github.com/jackc/pgx/v5 v5.9.2
 )
 
 require (
