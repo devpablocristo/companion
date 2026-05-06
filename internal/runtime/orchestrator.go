@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -144,22 +143,6 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput) (RunResult, error) 
 		for _, tc := range resp.ToolCalls {
 			slog.Info("tool_call", "tool", tc.Name, "round", round)
 			toolStart := time.Now()
-			if err := ValidateToolCallSafety(tc.Name, tc.Args); err != nil {
-				slog.Warn("tool_call_rejected", "tool", tc.Name, "error", err)
-				trace.ToolCalls = append(trace.ToolCalls, ToolTrace{
-					Name:           tc.Name,
-					ToolCallID:     tc.ID,
-					Allowed:        false,
-					DecisionReason: err.Error(),
-					DurationMS:     time.Since(toolStart).Milliseconds(),
-				})
-				llmMessages = append(llmMessages, LLMMessage{
-					Role:       "tool",
-					Content:    fmt.Sprintf(`{"error":"tool call rejected: %s"}`, err.Error()),
-					ToolCallID: tc.ID,
-				})
-				continue
-			}
 			if event := ValidateToolPolicy(tc.Name, tc.Args, trace.AutonomyLevel); event != nil {
 				slog.Warn("tool_call_guardrail_rejected", "tool", tc.Name, "type", event.Type, "reason", event.Reason)
 				trace.GuardrailEvents = append(trace.GuardrailEvents, *event)
@@ -242,18 +225,3 @@ func FallbackReply(overview string) string {
 	return fmt.Sprintf("Estado actual:\n%s\n\n¿Qué necesitás?", overview)
 }
 
-// ValidateToolCallSafety regla dura en código: validaciones que no dependen del prompt.
-// Retorna error si la tool call viola una regla no negociable.
-func ValidateToolCallSafety(toolName string, args json.RawMessage) error {
-	switch toolName {
-	case "approve_action", "reject_action":
-		// Regla dura: debe tener approval_id
-		var input struct {
-			ApprovalID string `json:"approval_id"`
-		}
-		if err := json.Unmarshal(args, &input); err != nil || input.ApprovalID == "" {
-			return fmt.Errorf("approval_id requerido para %s", toolName)
-		}
-	}
-	return nil
-}

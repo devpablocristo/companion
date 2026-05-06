@@ -6,6 +6,9 @@ BEGIN;
 ALTER TABLE companion_connector_executions
     RENAME COLUMN review_request_id TO governance_request_id;
 
+ALTER TABLE companion_task_actions
+    RENAME COLUMN review_request_id TO governance_request_id;
+
 ALTER TABLE companion_proposals
     RENAME COLUMN review_request_id TO governance_request_id;
 ALTER TABLE companion_proposals

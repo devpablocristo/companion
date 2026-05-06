@@ -23,7 +23,7 @@ services:
     environment:
       PORT: "8080"
       DATABASE_URL: "postgres://postgres:postgres@companion-postgres:5432/nexus_companion?sslmode=disable"
-      COMPANION_API_KEYS: "admin=${COMPANION_ADMIN_API_KEY:-companion-admin-dev-key}|service_principal=true|scopes=companion:tasks:read+companion:tasks:write+companion:connectors:execute+companion:connectors:admin"
+      COMPANION_API_KEYS: "admin=${COMPANION_ADMIN_API_KEY:-companion-admin-dev-key}|service_principal=true|org_id=${COMPANION_DEV_ORG_ID:-local-dev-org}|scopes=companion:tasks:read+companion:tasks:write+companion:connectors:execute+companion:connectors:admin"
       COMPANION_AUTH_ISSUER_URL: "${COMPANION_AUTH_ISSUER_URL:-}"
       COMPANION_AUTH_AUDIENCE: "${COMPANION_AUTH_AUDIENCE:-}"
       # Apunta al servicio Nexus Governance (proyecto separado).
@@ -56,9 +56,6 @@ services:
     restart: unless-stopped
     environment:
       COMPANION_PROXY_API_KEY: "${COMPANION_ADMIN_API_KEY:-companion-admin-dev-key}"
-      GOVERNANCE_PROXY_API_KEY: "${GOVERNANCE_API_KEY:-governance-admin-dev-key}"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     ports:
       - "${COMPANION_CONSOLE_PORT:-13002}:80"
     depends_on:

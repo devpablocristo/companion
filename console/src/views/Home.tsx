@@ -1,18 +1,13 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
-  approveApproval,
   executeCompanionTask,
   fetchCompanionMemory,
   fetchCompanionTask,
   fetchCompanionTasks,
-  fetchPendingApprovals,
-  fetchRequest,
-  rejectApproval,
   retryCompanionTask,
   syncCompanionTaskFromGovernance,
 } from '../api'
 import { t, relativeTime } from '../i18n'
-import RiskBadge from '../components/RiskBadge'
 import StatusBadge from '../components/StatusBadge'
 
 type TaskRow = {
@@ -49,12 +44,6 @@ type TaskDetail = {
       summary?: string
     }
   }
-  linked_governance_requests?: Array<{
-    request?: {
-      id?: string
-      status?: string
-    }
-  }>
 }
 
 type MemoryEntry = {
@@ -65,48 +54,14 @@ type MemoryEntry = {
   updated_at: string
 }
 
-type ApprovalItem = {
-  id: string
-  request_id: string
-  expires_at: string
-  break_glass?: boolean
-  current_approvals?: number
-  required_approvals?: number
-  decisions?: Array<{
-    approver_id?: string
-    action?: string
-    note?: string
-  }>
-}
-
-type GovernanceRequest = {
-  id: string
-  action_type?: string
-  target_resource?: string
-  target_system?: string
-  risk_level?: string
-  status?: string
-  decision?: string
-  requester_id?: string
-  requester_type?: string
-  params?: Record<string, unknown>
-}
-
-type EnrichedApproval = {
-  approval: ApprovalItem
-  request: GovernanceRequest | null
-}
-
 type TaskMemoryProjection = {
   summary?: MemoryEntry
   facts?: MemoryEntry
 }
 
 type ActionKind = 'sync' | 'execute' | 'retry'
-type ApprovalDecision = 'approve' | 'reject'
 
 const sectionTone = {
-  approval: 'from-amber-500/10 via-amber-500/5 to-transparent border-amber-500/20',
   execute: 'from-emerald-500/10 via-emerald-500/5 to-transparent border-emerald-500/20',
   waiting: 'from-sky-500/10 via-sky-500/5 to-transparent border-sky-500/20',
   failed: 'from-rose-500/10 via-rose-500/5 to-transparent border-rose-500/20',
@@ -127,12 +82,6 @@ function formatRelative(value?: string | null, lang = 'en') {
   return relativeTime(lang, value)
 }
 
-function linkedTaskId(request: GovernanceRequest | null | undefined) {
-  const nexus = request?.params?.nexus as Record<string, unknown> | undefined
-  const taskId = nexus?.task_id
-  return typeof taskId === 'string' && taskId ? taskId : null
-}
-
 function factsNextStep(memory?: TaskMemoryProjection) {
   const nextStep = memory?.facts?.payload_json?.next_step
   return typeof nextStep === 'string' && nextStep ? nextStep : null
@@ -148,14 +97,6 @@ function taskSummary(task: TaskRow, memory?: TaskMemoryProjection) {
   return task.title
 }
 
-function taskGovernanceRequestId(detail?: TaskDetail) {
-  return (
-    detail?.governance_sync?.governance_request_id ||
-    detail?.linked_governance_requests?.find((item) => item.request?.id)?.request?.id ||
-    null
-  )
-}
-
 function canExecuteTask(task: TaskRow) {
   return task.status === 'waiting_for_input'
 }
@@ -168,15 +109,7 @@ function canRetryTask(task: TaskRow, detail?: TaskDetail) {
   return task.status === 'failed' && Boolean(detail?.execution_state?.retryable)
 }
 
-function StatCard({
-  label,
-  value,
-  accent,
-}: {
-  label: string
-  value: number
-  accent: string
-}) {
+function StatCard({ label, value, accent }: { label: string; value: number; accent: string }) {
   return (
     <div className="rounded-2xl border border-gray-800 bg-gray-950/70 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.02)]">
       <p className="text-[11px] uppercase tracking-[0.24em] text-gray-500">{label}</p>
@@ -245,182 +178,6 @@ function SectionCard({
   )
 }
 
-function ApprovalDecisionCard({
-  approval,
-  request,
-  taskDetail,
-  taskMemory,
-  lang,
-  busyApprove,
-  busyReject,
-  onViewTask,
-  onViewReplay,
-  onDecision,
-}: {
-  approval: ApprovalItem
-  request: GovernanceRequest | null
-  taskDetail?: TaskDetail
-  taskMemory?: TaskMemoryProjection
-  lang: string
-  busyApprove?: boolean
-  busyReject?: boolean
-  onViewTask: (taskId: string) => void
-  onViewReplay: (requestId: string) => void
-  onDecision: (decision: ApprovalDecision, note: string) => Promise<void>
-}) {
-  const [mode, setMode] = useState<ApprovalDecision | null>(null)
-  const [note, setNote] = useState('')
-  const [confirmation, setConfirmation] = useState('')
-  const [cardError, setCardError] = useState<string | null>(null)
-  const taskId = linkedTaskId(request)
-  const expectedWord = mode === 'approve' ? 'APPROVE' : 'REJECT'
-  const summary =
-    taskId && taskMemory
-      ? taskSummary(
-          {
-            id: taskId,
-            title: request?.action_type || approval.request_id,
-            goal: request?.target_resource,
-            status: taskDetail?.task.status || 'waiting_for_approval',
-            governance_status: request?.status,
-            updated_at: taskDetail?.task.updated_at || '',
-          },
-          taskMemory,
-        )
-      : null
-  const nextStep = taskId ? factsNextStep(taskMemory) : null
-  const isSubmitting = Boolean(mode === 'approve' ? busyApprove : busyReject)
-  const isValid = Boolean(mode) && note.trim().length >= 3 && confirmation === expectedWord
-
-  const start = (decision: ApprovalDecision) => {
-    setMode(decision)
-    setConfirmation('')
-    setCardError(null)
-  }
-
-  const cancel = () => {
-    setMode(null)
-    setNote('')
-    setConfirmation('')
-    setCardError(null)
-  }
-
-  const submit = async () => {
-    if (!mode || !isValid) return
-    setCardError(null)
-    try {
-      await onDecision(mode, note.trim())
-      cancel()
-    } catch (e) {
-      setCardError(e instanceof Error ? e.message : 'decision failed')
-    }
-  }
-
-  return (
-    <div className="rounded-2xl border border-gray-800 bg-gray-950/65 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.02)]">
-      <div className="flex flex-wrap items-center gap-2">
-        <p className="text-sm font-semibold text-white">{request?.action_type || approval.request_id}</p>
-        {request?.risk_level && <RiskBadge level={request.risk_level} />}
-        {request?.status && <StatusBadge status={request.status} />}
-        {approval.break_glass && (
-          <span className="rounded-full border border-red-700/70 bg-red-950/60 px-2 py-0.5 text-[11px] font-medium uppercase tracking-[0.16em] text-red-200">
-            {t(lang, 'breakGlass')} {approval.current_approvals || 0}/{approval.required_approvals || 0}
-          </span>
-        )}
-      </div>
-
-      <p className="mt-2 text-sm text-gray-300">
-        {request?.target_resource || request?.target_system || t(lang, 'approvalInbox')}
-      </p>
-      {summary && <p className="mt-2 text-sm leading-6 text-gray-400">{summary}</p>}
-      {nextStep && (
-        <p className="mt-2 text-xs uppercase tracking-[0.2em] text-gray-500">
-          {t(lang, 'nextStep')}: <span className="normal-case tracking-normal text-gray-300">{nextStep}</span>
-        </p>
-      )}
-      <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-gray-500">
-        <span>{request?.requester_id || '—'}{request?.requester_type ? ` (${request.requester_type})` : ''}</span>
-        <span>{formatRelative(approval.expires_at, lang)}</span>
-        {taskId && <span className="font-mono text-[11px] text-gray-600">{taskId}</span>}
-      </div>
-
-      {approval.break_glass && approval.decisions && approval.decisions.length > 0 && (
-        <div className="mt-3 space-y-1">
-          {approval.decisions.map((decision, index) => (
-            <div
-              key={`${decision.approver_id || 'decision'}-${index}`}
-              className={`rounded-lg px-2 py-1 text-xs ${
-                decision.action === 'approve'
-                  ? 'bg-emerald-950/50 text-emerald-300'
-                  : 'bg-rose-950/50 text-rose-300'
-              }`}
-            >
-              {decision.approver_id}: {decision.action} {decision.note ? `— ${decision.note}` : ''}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {!mode && (
-        <div className="mt-4 flex flex-wrap gap-2">
-          <ActionButton label={t(lang, 'approve')} onClick={() => start('approve')} busy={busyApprove} tone="success" />
-          <ActionButton label={t(lang, 'reject')} onClick={() => start('reject')} busy={busyReject} tone="danger" />
-          {taskId && <ActionButton label={t(lang, 'openTask')} onClick={() => onViewTask(taskId)} />}
-          {request?.id && <ActionButton label={t(lang, 'openReplay')} onClick={() => onViewReplay(request.id)} tone="info" />}
-        </div>
-      )}
-
-      {mode && (
-        <div className={`mt-4 rounded-2xl border p-4 ${
-          mode === 'approve'
-            ? 'border-emerald-700/40 bg-emerald-950/20'
-            : 'border-rose-700/40 bg-rose-950/20'
-        }`}>
-          <p className="text-sm text-gray-300">{t(lang, 'noteRequired')}</p>
-          <textarea
-            rows={3}
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            placeholder={t(lang, 'notePlaceholder')}
-            className="mt-3 w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white"
-          />
-          <p className="mt-3 text-xs text-gray-400">
-            {t(lang, 'typeToConfirm')} <span className={`font-mono font-bold ${mode === 'approve' ? 'text-emerald-300' : 'text-rose-300'}`}>{expectedWord}</span>
-          </p>
-          <input
-            value={confirmation}
-            onChange={(e) => setConfirmation(e.target.value)}
-            placeholder={expectedWord}
-            className="mt-2 w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-sm font-mono text-white"
-          />
-          {cardError && <p className="mt-3 text-xs text-rose-300">{cardError}</p>}
-          <div className="mt-4 flex flex-wrap gap-2">
-            <ActionButton
-              label={mode === 'approve' ? t(lang, 'confirmApprove') : t(lang, 'confirmReject')}
-              onClick={submit}
-              busy={isSubmitting}
-              disabled={!isValid}
-              tone={mode === 'approve' ? 'success' : 'danger'}
-            />
-            <button
-              type="button"
-              onClick={cancel}
-              className="rounded-full border border-gray-700 bg-gray-900 px-3 py-1.5 text-xs font-medium text-gray-300 transition-colors hover:border-gray-500"
-            >
-              {t(lang, 'cancel')}
-            </button>
-          </div>
-          {!isValid && (
-            <p className="mt-3 text-[11px] uppercase tracking-[0.16em] text-gray-500">
-              {t(lang, 'homeApprovalConfirmationHint')}
-            </p>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
 function TaskCard({
   task,
   detail,
@@ -428,7 +185,6 @@ function TaskCard({
   lang,
   busy,
   onViewTask,
-  onViewReplay,
   onSync,
   onExecute,
   onRetry,
@@ -439,12 +195,10 @@ function TaskCard({
   lang: string
   busy?: boolean
   onViewTask: (taskId: string) => void
-  onViewReplay: (requestId: string) => void
   onSync: (taskId: string) => void
   onExecute: (taskId: string) => void
   onRetry: (taskId: string) => void
 }) {
-  const governanceRequestId = taskGovernanceRequestId(detail)
   const nextStep = factsNextStep(memory)
   const lastError = detail?.execution_state?.last_error || detail?.task.governance_sync_error
 
@@ -474,14 +228,6 @@ function TaskCard({
       )}
       <div className="mt-4 flex flex-wrap gap-2">
         <ActionButton label={t(lang, 'openTask')} onClick={() => onViewTask(task.id)} busy={busy} />
-        {governanceRequestId && (
-          <ActionButton
-            label={t(lang, 'openReplay')}
-            onClick={() => onViewReplay(governanceRequestId)}
-            busy={busy}
-            tone="info"
-          />
-        )}
         {canSyncTask(task) && (
           <ActionButton
             label={t(lang, 'syncFromGovernance')}
@@ -518,16 +264,11 @@ function TaskCard({
 export default function Home({
   lang,
   onViewTask = (_taskId: string) => {},
-  onViewReplay = (_requestId: string) => {},
-  onViewInbox = () => {},
 }: {
   lang: string
   onViewTask?: (taskId: string) => void
-  onViewReplay?: (requestId: string) => void
-  onViewInbox?: () => void
 }) {
   const [tasks, setTasks] = useState<TaskRow[]>([])
-  const [approvals, setApprovals] = useState<EnrichedApproval[]>([])
   const [taskDetails, setTaskDetails] = useState<Record<string, TaskDetail>>({})
   const [taskMemory, setTaskMemory] = useState<Record<string, TaskMemoryProjection>>({})
   const [loading, setLoading] = useState(true)
@@ -537,27 +278,11 @@ export default function Home({
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [taskRes, approvalRes] = await Promise.all([fetchCompanionTasks(), fetchPendingApprovals()])
+      const taskRes = await fetchCompanionTasks()
       const taskRows = [...((taskRes.data || []) as TaskRow[])].sort(
         (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
       )
       setTasks(taskRows)
-
-      const pendingApprovals = ((approvalRes.data || []) as ApprovalItem[]).slice(0, 6)
-      const approvalItems = await Promise.all(
-        pendingApprovals.map(async (approval) => {
-          try {
-            const request = (await fetchRequest(approval.request_id)) as GovernanceRequest
-            return { approval, request }
-          } catch {
-            return { approval, request: null }
-          }
-        }),
-      )
-      setApprovals(approvalItems)
-      const linkedApprovalTaskIds = approvalItems
-        .map(({ request }) => linkedTaskId(request))
-        .filter((value): value is string => Boolean(value))
 
       const candidateTasks = [
         ...taskRows.filter((task) => task.status === 'waiting_for_input').slice(0, 4),
@@ -565,7 +290,7 @@ export default function Home({
         ...taskRows.filter((task) => task.status === 'failed').slice(0, 4),
         ...taskRows.slice(0, 6),
       ]
-      const candidateIds = Array.from(new Set([...candidateTasks.map((task) => task.id), ...linkedApprovalTaskIds]))
+      const candidateIds = Array.from(new Set(candidateTasks.map((task) => task.id)))
 
       const [detailResults, memoryResults] = await Promise.all([
         Promise.allSettled(candidateIds.map(async (id) => [id, (await fetchCompanionTask(id)) as TaskDetail] as const)),
@@ -635,32 +360,6 @@ export default function Home({
     }
   }
 
-  const runApprovalDecision = async (approval: ApprovalItem, request: GovernanceRequest | null, decision: ApprovalDecision, note: string) => {
-    const key = `${decision}:${approval.id}`
-    const taskId = linkedTaskId(request)
-    setBusyAction((current) => ({ ...current, [key]: true }))
-    try {
-      if (decision === 'approve') {
-        await approveApproval(approval.id, note)
-      } else {
-        await rejectApproval(approval.id, note)
-      }
-      if (taskId) {
-        try {
-          await syncCompanionTaskFromGovernance(taskId)
-        } catch {
-          // fallback to normal refresh; Governance may still be settling.
-        }
-      }
-      setMessage({ type: 'ok', text: t(lang, `homeAction_${decision}_done`) })
-      await load()
-    } catch (e) {
-      throw (e instanceof Error ? e : new Error(`failed to ${decision} approval`))
-    } finally {
-      setBusyAction((current) => ({ ...current, [key]: false }))
-    }
-  }
-
   const waitingForApproval = useMemo(
     () => tasks.filter((task) => task.status === 'waiting_for_approval').slice(0, 4),
     [tasks],
@@ -701,8 +400,7 @@ export default function Home({
             </button>
           </div>
 
-          <div className="mt-6 grid grid-cols-2 gap-3 xl:grid-cols-4">
-            <StatCard label={t(lang, 'homePendingApprovals')} value={approvals.length} accent="text-amber-300" />
+          <div className="mt-6 grid grid-cols-2 gap-3 xl:grid-cols-3">
             <StatCard label={t(lang, 'homeReadyToExecute')} value={readyToExecute.length} accent="text-emerald-300" />
             <StatCard label={t(lang, 'homeFailedTasks')} value={failedTasks.length} accent="text-rose-300" />
             <StatCard label={t(lang, 'homeActiveTasks')} value={activeTasks} accent="text-sky-300" />
@@ -724,41 +422,6 @@ export default function Home({
 
       <div className="grid gap-6 xl:grid-cols-2">
         <SectionCard
-          title={t(lang, 'homePendingApprovals')}
-          subtitle={t(lang, 'homePendingApprovalsSubtitle')}
-          tone="approval"
-          action={
-            <ActionButton
-              label={t(lang, 'openInbox')}
-              onClick={onViewInbox}
-              tone="info"
-            />
-          }
-        >
-          <div className="space-y-3">
-            {approvals.length === 0 && <p className="text-sm text-gray-500">{t(lang, 'noPendingApprovals')}</p>}
-            {approvals.map(({ approval, request }) => {
-              const taskId = linkedTaskId(request)
-              return (
-                <ApprovalDecisionCard
-                  key={approval.id}
-                  approval={approval}
-                  request={request}
-                  taskDetail={taskId ? taskDetails[taskId] : undefined}
-                  taskMemory={taskId ? taskMemory[taskId] : undefined}
-                  lang={lang}
-                  busyApprove={Boolean(busyAction[`approve:${approval.id}`])}
-                  busyReject={Boolean(busyAction[`reject:${approval.id}`])}
-                  onViewTask={onViewTask}
-                  onViewReplay={onViewReplay}
-                  onDecision={(decision, note) => runApprovalDecision(approval, request, decision, note)}
-                />
-              )
-            })}
-          </div>
-        </SectionCard>
-
-        <SectionCard
           title={t(lang, 'homeReadyToExecute')}
           subtitle={t(lang, 'homeReadyToExecuteSubtitle')}
           tone="execute"
@@ -774,7 +437,6 @@ export default function Home({
                 lang={lang}
                 busy={Boolean(busyAction[`execute:${task.id}`])}
                 onViewTask={onViewTask}
-                onViewReplay={onViewReplay}
                 onSync={(id) => runTaskAction(id, 'sync')}
                 onExecute={(id) => runTaskAction(id, 'execute')}
                 onRetry={(id) => runTaskAction(id, 'retry')}
@@ -799,7 +461,6 @@ export default function Home({
                 lang={lang}
                 busy={Boolean(busyAction[`sync:${task.id}`])}
                 onViewTask={onViewTask}
-                onViewReplay={onViewReplay}
                 onSync={(id) => runTaskAction(id, 'sync')}
                 onExecute={(id) => runTaskAction(id, 'execute')}
                 onRetry={(id) => runTaskAction(id, 'retry')}
@@ -824,7 +485,6 @@ export default function Home({
                 lang={lang}
                 busy={Boolean(busyAction[`retry:${task.id}`])}
                 onViewTask={onViewTask}
-                onViewReplay={onViewReplay}
                 onSync={(id) => runTaskAction(id, 'sync')}
                 onExecute={(id) => runTaskAction(id, 'execute')}
                 onRetry={(id) => runTaskAction(id, 'retry')}
@@ -870,13 +530,6 @@ export default function Home({
                 </div>
                 <div className="flex shrink-0 flex-wrap gap-2">
                   <ActionButton label={t(lang, 'openTask')} onClick={() => onViewTask(task.id)} />
-                  {taskGovernanceRequestId(detail) && (
-                    <ActionButton
-                      label={t(lang, 'openReplay')}
-                      onClick={() => onViewReplay(taskGovernanceRequestId(detail) as string)}
-                      tone="info"
-                    />
-                  )}
                 </div>
               </div>
             )

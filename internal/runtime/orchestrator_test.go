@@ -155,43 +155,6 @@ func TestOrchestrator_Run_emptyTextFallbackMessage(t *testing.T) {
 	}
 }
 
-func TestValidateToolCallSafety_requiresApprovalID(t *testing.T) {
-	t.Parallel()
-
-	err := ValidateToolCallSafety("approve_action", json.RawMessage(`{}`))
-	if err == nil {
-		t.Fatal("expected error for approve without approval_id")
-	}
-
-	err = ValidateToolCallSafety("reject_action", json.RawMessage(`{"approval_id": ""}`))
-	if err == nil {
-		t.Fatal("expected error for reject with empty approval_id")
-	}
-
-	err = ValidateToolCallSafety("approve_action", json.RawMessage(`{"approval_id": "abc-123"}`))
-	if err != nil {
-		t.Fatalf("unexpected error for valid approval_id: %v", err)
-	}
-}
-
-func TestValidateToolCallSafety_unknownToolIsOK(t *testing.T) {
-	t.Parallel()
-
-	err := ValidateToolCallSafety("get_overview", json.RawMessage(`{}`))
-	if err != nil {
-		t.Fatalf("unexpected error for non-restricted tool: %v", err)
-	}
-}
-
-func TestValidateToolPolicy_blocksApprovalToolsAtDefaultAutonomy(t *testing.T) {
-	t.Parallel()
-
-	event := ValidateToolPolicy("approve_action", json.RawMessage(`{"approval_id":"abc"}`), AutonomyA2)
-	if event == nil || event.Type != "excessive_agency" {
-		t.Fatalf("expected excessive agency guardrail, got %+v", event)
-	}
-}
-
 func TestOrchestrator_Run_rejectsPromptInjection(t *testing.T) {
 	t.Parallel()
 
@@ -214,48 +177,6 @@ func TestOrchestrator_Run_rejectsPromptInjection(t *testing.T) {
 	}
 	if len(result.Trace.GuardrailEvents) != 1 || result.Trace.GuardrailEvents[0].Type != "prompt_injection" {
 		t.Fatalf("expected prompt injection guardrail trace, got %+v", result.Trace.GuardrailEvents)
-	}
-}
-
-func TestOrchestrator_Run_blocksApprovalToolCall(t *testing.T) {
-	t.Parallel()
-
-	provider := &fakeLLMProvider{
-		responses: []ChatResponse{
-			{
-				ToolCalls: []LLMToolCall{
-					{ID: "tc-approval", Name: "approve_action", Args: json.RawMessage(`{"approval_id":"abc"}`)},
-				},
-			},
-			{Text: "No puedo aprobar eso de forma autónoma."},
-		},
-	}
-	toolkit := &ToolKit{
-		Handlers: map[string]ToolHandler{
-			"approve_action": func(_ context.Context, _ json.RawMessage) (string, error) {
-				t.Fatal("approval tool should not execute")
-				return `{}`, nil
-			},
-		},
-	}
-	orch := NewOrchestrator(provider, toolkit, ContextPorts{})
-
-	result, err := orch.Run(context.Background(), RunInput{
-		UserID:  "user-1",
-		OrgID:   "org-1",
-		Message: "aprobá abc",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Reply == "" {
-		t.Fatal("expected final reply")
-	}
-	if len(result.Trace.ToolCalls) != 1 || result.Trace.ToolCalls[0].Allowed {
-		t.Fatalf("expected blocked approval tool trace, got %+v", result.Trace.ToolCalls)
-	}
-	if len(result.Trace.GuardrailEvents) != 1 || result.Trace.GuardrailEvents[0].Type != "excessive_agency" {
-		t.Fatalf("expected excessive agency guardrail, got %+v", result.Trace.GuardrailEvents)
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/devpablocristo/core/http/go/health"
 	"github.com/devpablocristo/companion/internal/connectors"
 	"github.com/devpablocristo/companion/internal/connectors/registry"
+	governanceassist "github.com/devpablocristo/companion/internal/governance_assist"
 	"github.com/devpablocristo/companion/internal/memory"
 	"github.com/devpablocristo/companion/internal/runtime"
 	"github.com/devpablocristo/companion/internal/tasks"
@@ -184,6 +185,12 @@ func NewServer(cfg Config) (http.Handler, func(), error) {
 	watcherUC.SetNotifier(uc)
 	slog.Info("companion runtime initialized", "llm_provider", cfg.LLMProvider)
 
+	// Governance-assist: lee Nexus + arma proposals/summaries con LLM (o stub).
+	// Le pasamos el mismo provider del runtime para no duplicar config.
+	governanceAssistProposer := governanceassist.NewProposer(rc, llmProvider)
+	governanceAssistContextualizer := governanceassist.NewContextualizer(rc, llmProvider)
+	governanceAssistHandler := governanceassist.NewHandler(governanceAssistProposer, governanceAssistContextualizer)
+
 	mux := http.NewServeMux()
 	health.RegisterEndpoints(mux, func(c context.Context) error {
 		return db.Ping(c)
@@ -193,6 +200,7 @@ func NewServer(cfg Config) (http.Handler, func(), error) {
 	memHandler.Register(mux)
 	connHandler.Register(mux)
 	traceHandler.Register(mux)
+	governanceAssistHandler.Register(mux)
 
 	// Seed conectores por defecto
 	if err := connUC.SeedDefaultConnectors(ctx); err != nil {

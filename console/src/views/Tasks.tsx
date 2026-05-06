@@ -228,11 +228,9 @@ function StatusPill({
 export default function Tasks({
   lang,
   focusTaskId,
-  onViewReplay = (_requestId: string) => {},
 }: {
   lang: string
   focusTaskId?: string | null
-  onViewReplay?: (requestId: string) => void
 }) {
   const [list, setList] = useState<TaskRow[]>([])
   const [detail, setDetail] = useState<TaskDetail | null>(null)
@@ -695,13 +693,9 @@ export default function Tasks({
                   </div>
                 </div>
                 {primaryGovernanceRequestId && (
-                  <button
-                    type="button"
-                    onClick={() => onViewReplay(primaryGovernanceRequestId)}
-                    className="px-3 py-1.5 rounded bg-indigo-900 text-sm text-indigo-200 hover:bg-indigo-800"
-                  >
-                    {t(lang, 'openReplay')}
-                  </button>
+                  <span className="px-3 py-1.5 rounded bg-gray-900 text-xs text-gray-400 font-mono">
+                    {primaryGovernanceRequestId}
+                  </span>
                 )}
                 {detail.task.status === 'waiting_for_approval' && (
                   <button
@@ -1099,15 +1093,6 @@ export default function Tasks({
                             {formatStatus(lr.request.status)} · {formatStatus(lr.request.decision)} ·{' '}
                             {formatStatus(lr.request.risk_level)}
                           </span>
-                          {lr.request.id && (
-                            <button
-                              type="button"
-                              onClick={() => onViewReplay(String(lr.request?.id))}
-                              className="rounded border border-indigo-800 px-2 py-0.5 text-xs text-indigo-200 hover:bg-indigo-950/50"
-                            >
-                              {t(lang, 'openReplay')}
-                            </button>
-                          )}
                         </div>
                       ) : (
                         <span className="text-gray-500">{t(lang, 'requestUnavailable')}</span>

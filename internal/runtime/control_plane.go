@@ -143,38 +143,12 @@ func CheckPromptInjection(input string) *GuardrailEvent {
 	return nil
 }
 
-func ValidateToolPolicy(toolName string, args json.RawMessage, autonomy AutonomyLevel) *GuardrailEvent {
+func ValidateToolPolicy(toolName string, args json.RawMessage, _ AutonomyLevel) *GuardrailEvent {
 	if event := CheckPromptInjection(string(args)); event != nil {
 		event.Target = "tool_args:" + toolName
 		return event
 	}
-	if isApprovalTool(toolName) && autonomyRank(autonomy) < autonomyRank(AutonomyA4) {
-		return &GuardrailEvent{Type: "excessive_agency", Target: toolName, Reason: "approval tools require explicit higher autonomy and human approval context"}
-	}
 	return nil
-}
-
-func isApprovalTool(toolName string) bool {
-	return toolName == "approve_action" || toolName == "reject_action"
-}
-
-func autonomyRank(level AutonomyLevel) int {
-	switch level {
-	case AutonomyA0:
-		return 0
-	case AutonomyA1:
-		return 1
-	case AutonomyA2, "":
-		return 2
-	case AutonomyA3:
-		return 3
-	case AutonomyA4:
-		return 4
-	case AutonomyA5:
-		return 5
-	default:
-		return 2
-	}
 }
 
 func runtimeSummary(identity IdentityChain, route AgentRoute) string {

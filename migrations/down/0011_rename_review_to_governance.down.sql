@@ -26,6 +26,9 @@ ALTER TABLE companion_proposals
 ALTER TABLE companion_proposals
     RENAME COLUMN governance_request_id TO review_request_id;
 
+ALTER TABLE companion_task_actions
+    RENAME COLUMN governance_request_id TO review_request_id;
+
 ALTER TABLE companion_connector_executions
     RENAME COLUMN governance_request_id TO review_request_id;
 
