@@ -131,7 +131,7 @@ func (p *PontiConnector) Execute(ctx context.Context, spec domain.ExecutionSpec)
 func capabilityFromTool(m ai.CapabilityManifest, tool ai.CapabilityTool) domain.Capability {
 	requiresGovernance := false
 	if tool.Governance != nil {
-		requiresGovernance = tool.Governance.RequiresReview
+		requiresGovernance = tool.Governance.RequiresApproval
 	}
 	mode := domain.CapabilityModeRead
 	sideEffectClass := domain.SideEffectClassRead

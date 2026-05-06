@@ -3,7 +3,7 @@ module github.com/devpablocristo/companion
 go 1.26.1
 
 require (
-	github.com/devpablocristo/core/ai/go v0.2.0
+	github.com/devpablocristo/core/ai/go v0.3.0
 	github.com/devpablocristo/core/authn/go v0.2.1
 	github.com/devpablocristo/core/concurrency/go v0.2.0
 	github.com/devpablocristo/core/config/go v0.1.0
