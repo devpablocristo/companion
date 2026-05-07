@@ -6,6 +6,25 @@ separado) para todas las acciones que requieran approval/audit.
 > La DB se llama `nexus_companion` por consistencia histórica con el resto
 > del ecosistema; el módulo Go es `github.com/devpablocristo/companion`.
 
+## Boundaries arquitectónicos (regla dura)
+
+- **IA = Companion**, **Gobernanza = Nexus**, sin excepciones.
+- Companion **nunca** evalúa policies, nunca decide approve/deny, nunca ejecuta
+  approvals. Para cualquier decisión gobernada, llama a Nexus por HTTP via
+  `core/governance/go/governanceclient`.
+- Nexus **nunca** importa código LLM ni depende de un proveedor de IA. Los
+  helpers de IA (proposer de policies, contextualizer de approvals) viven en
+  `internal/governance_assist/` de este repo y se exponen como secondary
+  calls que la consola de Nexus puede consumir.
+- El runtime LLM de Companion **no tiene** tools de approve/reject de
+  governance — el contract test
+  `scripts/quality/check-governance-imports.sh` bloquea el merge si
+  alguien reintroduce los packages eliminados de
+  `core/governance/go/{decision,policy,risk,approval,kernel}` (todos
+  movidos a `nexus/governance/internal/`).
+- Ver el plan de refactor cerrado en
+  `~/.claude/plans/a-b-y-luego-ponti-binary-turing.md`.
+
 ## Estructura
 
 ```

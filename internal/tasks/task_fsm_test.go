@@ -63,6 +63,77 @@ func TestEventFromGovernanceRequestStatusWithExecutionPlan(t *testing.T) {
 	}
 }
 
+// TestFSMContract_HandlesAllNexusStatuses garantiza que el FSM de
+// Companion mapea TODOS los statuses canónicos publicados por Nexus en
+// governanceclient.KnownStatuses. Si Nexus agrega un status nuevo, la
+// slice crece y el test falla hasta que un dev:
+//  1. Agrega el case correspondiente en task_fsm.go.
+//  2. Agrega la fila en este test (expected map).
+//
+// Esta es la red de seguridad del contract Companion ↔ Nexus (V8 plan).
+func TestFSMContract_HandlesAllNexusStatuses(t *testing.T) {
+	t.Parallel()
+	type expectation struct {
+		event string
+		apply bool
+	}
+	expected := map[string]expectation{
+		governanceclient.StatusPending:         {"", false},
+		governanceclient.StatusEvaluated:       {"", false},
+		governanceclient.StatusPendingApproval: {"", false},
+		governanceclient.StatusAllowed:         {evGovernanceResolvedAllow, true},
+		governanceclient.StatusApproved:        {evGovernanceResolvedAllow, true},
+		governanceclient.StatusExecuted:        {evGovernanceResolvedAllow, true},
+		governanceclient.StatusDenied:          {evGovernanceResolvedDeny, true},
+		governanceclient.StatusRejected:        {evGovernanceResolvedDeny, true},
+		governanceclient.StatusExpired:         {evGovernanceResolvedDeny, true},
+		governanceclient.StatusFailed:          {evGovernanceResolvedDeny, true},
+		governanceclient.StatusCancelled:       {evGovernanceResolvedDeny, true},
+	}
+
+	if len(expected) != len(governanceclient.KnownStatuses) {
+		t.Fatalf("contract drift: governanceclient.KnownStatuses has %d entries but this test expects %d. "+
+			"Nexus may have added/removed a status — update both task_fsm.go and the expected map below.",
+			len(governanceclient.KnownStatuses), len(expected))
+	}
+
+	for _, status := range governanceclient.KnownStatuses {
+		exp, found := expected[status]
+		if !found {
+			t.Errorf("contract: governanceclient.KnownStatuses includes %q but the FSM contract test has no row for it. "+
+				"Update task_fsm.go to handle it, then add the expected mapping in this test.", status)
+			continue
+		}
+		ev, apply := eventFromGovernanceRequestStatus(status)
+		if ev != exp.event || apply != exp.apply {
+			t.Errorf("status %q: got (event=%q, apply=%v) want (event=%q, apply=%v)",
+				status, ev, apply, exp.event, exp.apply)
+		}
+	}
+}
+
+// TestFSMContract_SubmitResponseCoversImmediate verifica que
+// eventFromSubmitResponse maneja sin error los statuses que Nexus puede
+// devolver sincrónicamente en POST /v1/requests. Si Nexus agrega un
+// nuevo status inmediato, esto falla — fuerza ajuste consciente.
+func TestFSMContract_SubmitResponseCoversImmediate(t *testing.T) {
+	t.Parallel()
+	immediate := []string{
+		governanceclient.StatusAllowed,
+		governanceclient.StatusApproved,
+		governanceclient.StatusExecuted,
+		governanceclient.StatusDenied,
+		governanceclient.StatusRejected,
+		governanceclient.StatusPendingApproval,
+	}
+	for _, s := range immediate {
+		ev, err := eventFromSubmitResponse(governanceclient.SubmitResponse{Status: s})
+		if err != nil || ev == "" {
+			t.Errorf("submit-response status %q: got (event=%q, err=%v) — expected a defined event", s, ev, err)
+		}
+	}
+}
+
 func TestCompanionTaskFSM_investigateAndGovernance(t *testing.T) {
 	t.Parallel()
 	m := companionTaskMachine()

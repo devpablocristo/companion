@@ -125,6 +125,14 @@ func (uc *Usecases) Execute(ctx context.Context, spec domain.ExecutionSpec) (dom
 	}
 
 	// Gating obligatorio: operations write/side-effect requieren approval/allow en Nexus.
+	//
+	// IMPORTANTE — esto es un READ-THROUGH PASS, no una decisión local.
+	// Companion NO evalúa policies, NO computa risk, NO decide approve/deny.
+	// El checker (governance gateway adapter) consulta a Nexus por HTTP el
+	// status del request y se limita a comparar el resultado contra el set
+	// "allowed/approved/executed" para autorizar la ejecución del connector.
+	// Source of truth = Nexus. Si Nexus cambia la semántica de status, el
+	// contract test (companion/internal/tasks/task_fsm_test.go) lo detecta.
 	if capability.NeedsGovernance() && uc.checker == nil {
 		return domain.ExecutionResult{}, ErrUngated
 	}
