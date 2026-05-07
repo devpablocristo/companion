@@ -36,6 +36,9 @@ jobs:
       - name: check migration versions
         run: bash scripts/quality/check-migrations.sh
 
+      - name: check governance imports (no embedded engine)
+        run: bash scripts/quality/check-governance-imports.sh
+
   console:
     name: console
     runs-on: ubuntu-latest

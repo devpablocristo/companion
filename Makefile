@@ -1,5 +1,5 @@
 # Companion (proyecto independiente, ex-v3/companion en monorepo Nexus)
-.PHONY: test qa check-migrations smoke up down build logs dev dev-down
+.PHONY: test qa check-migrations check-governance-imports smoke up down build logs dev dev-down
 
 DC := docker compose --project-directory $(CURDIR) -f $(CURDIR)/docker-compose.yml
 
@@ -7,10 +7,13 @@ DC := docker compose --project-directory $(CURDIR) -f $(CURDIR)/docker-compose.y
 check-migrations:
 	bash scripts/quality/check-migrations.sh
 
+check-governance-imports:
+	bash scripts/quality/check-governance-imports.sh
+
 test:
 	go test ./... -count=1
 
-qa: check-migrations
+qa: check-migrations check-governance-imports
 	go build ./...
 	go vet ./...
 	go test ./... -count=1 -race
