@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	ai "github.com/devpablocristo/core/ai/go"
 )
 
 // PontiClient es el HTTP client mínimo para invocar capabilities read-only
@@ -69,6 +71,29 @@ func (c *PontiClient) doGet(ctx context.Context, path string, orgID string, out 
 		return fmt.Errorf("decode response: %w", err)
 	}
 	return nil
+}
+
+// DiscoverManifest llama GET /api/v1/capabilities y devuelve el manifest
+// canónico que publica Ponti. Si Ponti expone múltiples paquetes, filtra
+// por ID == "ponti.insights" (el único que Companion consume hoy).
+//
+// La metadata de capabilities no es tenant-scoped (mismas tools para todos
+// los tenants), pero el endpoint de Ponti requiere auth/tenant context.
+// Mandamos un X-Tenant-Id sentinel ("companion-discovery") solo para
+// pasar el middleware; Ponti devuelve la lista completa igual.
+func (c *PontiClient) DiscoverManifest(ctx context.Context) (ai.CapabilityManifest, error) {
+	var resp struct {
+		Items []ai.CapabilityManifest `json:"items"`
+	}
+	if err := c.doGet(ctx, "/api/v1/capabilities", "companion-discovery", &resp); err != nil {
+		return ai.CapabilityManifest{}, fmt.Errorf("ponti capabilities: %w", err)
+	}
+	for _, m := range resp.Items {
+		if m.ID == "ponti.insights" {
+			return m, nil
+		}
+	}
+	return ai.CapabilityManifest{}, fmt.Errorf("ponti.insights manifest not present in capabilities response")
 }
 
 // ListInsights llama GET /api/v1/insights del tenant.

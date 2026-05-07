@@ -72,6 +72,18 @@ func newPontiMock(t *testing.T) *pontiMock {
 			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
 		}
+		// /api/v1/capabilities es metadata del producto: no requiere tenant
+		// real (Ponti acepta cualquier X-Tenant-Id no vacío para auth). El
+		// caller de Companion manda "companion-discovery" como sentinel.
+		if r.URL.Path == "/api/v1/capabilities" {
+			if orgID == "" {
+				http.Error(w, `{"error":"missing tenant"}`, http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, map[string]any{"items": []ai.CapabilityManifest{stubPontiManifest()}})
+			return
+		}
+
 		if orgID == "" {
 			http.Error(w, `{"error":"missing tenant"}`, http.StatusBadRequest)
 			return
@@ -128,6 +140,32 @@ func newPontiMock(t *testing.T) *pontiMock {
 	return m
 }
 
+// callsExcluding devuelve las calls registradas que no coinciden con
+// ninguno de los paths dados — útil para descontar la call de
+// /api/v1/capabilities que hace discovery al boot.
+func (m *pontiMock) callsExcluding(paths ...string) []recordedCall {
+	exclude := make(map[string]struct{}, len(paths))
+	for _, p := range paths {
+		exclude[p] = struct{}{}
+	}
+	out := make([]recordedCall, 0, len(m.calls))
+	for _, c := range m.calls {
+		if _, skip := exclude[c.Path]; skip {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+func (m *pontiMock) callPaths() []string {
+	out := make([]string, 0, len(m.calls))
+	for _, c := range m.calls {
+		out = append(out, c.Path)
+	}
+	return out
+}
+
 func writeJSON(w http.ResponseWriter, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(payload)
@@ -159,10 +197,13 @@ func TestPontiConnector_ListInsights_PropagatesTenant(t *testing.T) {
 		t.Fatalf("expected success, got %s err=%s", res.Status, res.ErrorMessage)
 	}
 
-	if len(mock.calls) != 1 {
-		t.Fatalf("expected 1 ponti call, got %d", len(mock.calls))
+	// Filtramos la call de discovery (/api/v1/capabilities) que el connector
+	// hace al boot. Para este test importa solo la call de la operación.
+	insightCalls := mock.callsExcluding("/api/v1/capabilities")
+	if len(insightCalls) != 1 {
+		t.Fatalf("expected 1 insight call, got %d (paths: %v)", len(insightCalls), mock.callPaths())
 	}
-	got := mock.calls[0]
+	got := insightCalls[0]
 	if got.OrgID != "tenant-A" {
 		t.Errorf("expected X-Tenant-Id=tenant-A, got %q", got.OrgID)
 	}
@@ -299,66 +340,181 @@ func TestPontiConnector_Explain_RequiresInsightID(t *testing.T) {
 func TestPontiConnector_RejectsInvalidToken(t *testing.T) {
 	t.Parallel()
 	mock := newPontiMock(t)
-	// Forzamos un token mal configurado: el mock devuelve 401.
+	// Token mal configurado: discovery al boot falla con 401, el connector
+	// queda unavailable y rechaza Execute con error claro (no expone el
+	// detalle del 401 al runtime — eso queda en el log warn del boot).
 	client := NewPontiClient(mock.server.URL, "wrong-key")
 	conn := NewPontiConnector(client)
 
-	res, err := conn.Execute(context.Background(), domain.ExecutionSpec{
+	if got := conn.Capabilities(); len(got) != 0 {
+		t.Fatalf("expected 0 capabilities when discovery fails, got %d", len(got))
+	}
+
+	_, err := conn.Execute(context.Background(), domain.ExecutionSpec{
 		ConnectorID: uuid.New(),
 		OrgID:       "tenant-A",
 		ActorID:     "user-A",
 		Operation:   "ponti.insights.list",
 		Payload:     json.RawMessage(`{}`),
 	})
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("expected error when connector is unavailable")
 	}
-	if res.Status != domain.ExecFailure {
-		t.Fatalf("expected failure on bad token, got %s", res.Status)
-	}
-	if !strings.Contains(res.ErrorMessage, "401") {
-		t.Errorf("expected 401 in error, got %q", res.ErrorMessage)
+	if !strings.Contains(err.Error(), "unavailable") {
+		t.Errorf("expected unavailable error, got %q", err.Error())
 	}
 }
 
-// TestPontiConnector_Manifest_PassesCanonicalValidation garantiza que la
-// copia local del manifest de Ponti respeta el contrato canónico
-// (ai.CapabilityManifest). Si Ponti cambia su manifest publicado y este
-// adapter no se actualiza, este test falla — protege contra drift hasta que
-// haya discovery dinámico (fase 2).
-func TestPontiConnector_Manifest_PassesCanonicalValidation(t *testing.T) {
-	t.Parallel()
-	m := pontiInsightsManifest()
-	if err := ai.ValidateCapabilityManifest(m); err != nil {
-		t.Fatalf("ponti manifest does not pass canonical validation: %v", err)
-	}
-	if m.ID != "ponti.insights" {
-		t.Errorf("manifest id must be ponti.insights, got %q", m.ID)
-	}
-	if len(m.Tools) != 3 {
-		t.Errorf("expected 3 tools in fase 1, got %d", len(m.Tools))
+// stubPontiManifest replica el shape canónico que Ponti publica en
+// /api/v1/capabilities. Sirve a los tests para asegurar que el discovery
+// dinámico es lo que Companion consume; pasar ValidateCapabilityManifest
+// es responsabilidad de Ponti (publicador).
+func stubPontiManifest() ai.CapabilityManifest {
+	roles := []string{"ponti.insights.viewer"}
+	modules := []string{"ponti", "insights"}
+	return ai.CapabilityManifest{
+		SchemaVersion: ai.CapabilityManifestSchemaVersion,
+		ID:            "ponti.insights",
+		Product:       "ponti",
+		Version:       "1.0.0",
+		TenantScope:   ai.CapabilityTenantScopeOrg,
+		Name:          "Ponti Insights",
+		Description:   "Read-only access to agricultural insights computed for the caller's tenant.",
+		Agents: []ai.CapabilityAgentDescriptor{
+			{Name: "ponti_insights", Description: "Answers questions about active insights for the caller's tenant."},
+		},
+		Tools: []ai.CapabilityTool{
+			{
+				Name:        "ponti.insights.list",
+				Description: "Lists insights for the caller's tenant with optional filters.",
+				Mode:        ai.CapabilityModeRead,
+				SideEffect:  false,
+				RiskClass:   ai.CapabilityRiskLow,
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"limit":            map[string]any{"type": "integer", "minimum": 1, "maximum": 200},
+						"include_resolved": map[string]any{"type": "boolean"},
+					},
+				},
+				OutputSchema: map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"items": map[string]any{"type": "array"}},
+					"required":   []string{"items"},
+				},
+				EvidenceFields:     []string{"source_ref", "captured_at"},
+				CapabilityAuthz:    ai.CapabilityAuthz{RequiredRoles: roles, RequiredModules: modules},
+				CapabilityExecutor: ai.CapabilityExecutor{ExecutorRef: "ponti-backend.insights.list"},
+			},
+			{
+				Name:        "ponti.insights.summary",
+				Description: "Returns aggregate counts of insights by status and category for the tenant.",
+				Mode:        ai.CapabilityModeRead,
+				SideEffect:  false,
+				RiskClass:   ai.CapabilityRiskLow,
+				InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+				OutputSchema: map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"summary": map[string]any{"type": "object"}, "evidence": map[string]any{"type": "object"}},
+					"required":   []string{"summary", "evidence"},
+				},
+				EvidenceFields:     []string{"source_ref", "captured_at", "tenant_scope"},
+				CapabilityAuthz:    ai.CapabilityAuthz{RequiredRoles: roles, RequiredModules: modules},
+				CapabilityExecutor: ai.CapabilityExecutor{ExecutorRef: "ponti-backend.insights.summary"},
+			},
+			{
+				Name:        "ponti.insights.explain",
+				Description: "Returns an insight together with its provenance and evidence.",
+				Mode:        ai.CapabilityModeRead,
+				SideEffect:  false,
+				RiskClass:   ai.CapabilityRiskLow,
+				InputSchema: map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"insight_id": map[string]any{"type": "string", "format": "uuid"}},
+					"required":   []string{"insight_id"},
+				},
+				OutputSchema: map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"insight": map[string]any{"type": "object"}, "evidence": map[string]any{"type": "object"}},
+					"required":   []string{"insight", "evidence"},
+				},
+				EvidenceFields:     []string{"source_ref", "captured_at", "first_seen", "event_type", "entity"},
+				CapabilityAuthz:    ai.CapabilityAuthz{RequiredRoles: roles, RequiredModules: modules},
+				CapabilityExecutor: ai.CapabilityExecutor{ExecutorRef: "ponti-backend.insights.explain"},
+			},
+		},
 	}
 }
 
-func TestPontiConnector_Capabilities_AreReadOnly(t *testing.T) {
+// TestPontiConnector_Discovery_PopulatesCapabilities valida que el
+// connector descubre el manifest desde /api/v1/capabilities al boot y lo
+// expone como capabilities normalizadas (sin copia hardcoded).
+func TestPontiConnector_Discovery_PopulatesCapabilities(t *testing.T) {
 	t.Parallel()
-	conn := NewPontiConnector(nil)
+	mock := newPontiMock(t)
+	conn, _ := newPontiConnector(t, mock)
+
 	caps := conn.Capabilities()
 	if len(caps) != 3 {
-		t.Fatalf("expected 3 capabilities (list, summary, explain), got %d", len(caps))
+		t.Fatalf("expected 3 capabilities discovered from Ponti, got %d", len(caps))
 	}
 	for _, c := range caps {
 		if !c.ReadOnly {
-			t.Errorf("capability %q must be read_only=true in fase 1", c.ID)
+			t.Errorf("capability %q must be read_only=true", c.ID)
 		}
 		if c.RequiresGovernance {
-			t.Errorf("capability %q must NOT require governance in fase 1 (read-only)", c.ID)
+			t.Errorf("capability %q must NOT require governance (read-only)", c.ID)
 		}
 		if c.RiskClass != domain.RiskClassLow {
 			t.Errorf("capability %q must risk_class=low, got %s", c.ID, c.RiskClass)
 		}
-		if c.AuthMode.Type != "delegated_user" {
-			t.Errorf("capability %q must auth_mode=delegated_user, got %s", c.ID, c.AuthMode.Type)
+	}
+
+	// El discovery debe haber pegado /api/v1/capabilities al menos una vez.
+	hits := 0
+	for _, call := range mock.calls {
+		if call.Path == "/api/v1/capabilities" {
+			hits++
 		}
+	}
+	if hits == 0 {
+		t.Fatal("expected connector to call /api/v1/capabilities at boot")
+	}
+}
+
+// TestPontiConnector_Discovery_DownAtBoot valida que si Ponti no responde
+// al boot, el connector queda unavailable pero no rompe Companion. Refresh
+// posterior debe recuperarlo.
+func TestPontiConnector_Discovery_DownAtBoot(t *testing.T) {
+	t.Parallel()
+	// Servidor que devuelve 503 hasta que cambiemos la flag.
+	var alive bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !alive {
+			http.Error(w, `{"error":"down"}`, http.StatusServiceUnavailable)
+			return
+		}
+		if r.URL.Path == "/api/v1/capabilities" {
+			writeJSON(w, map[string]any{"items": []ai.CapabilityManifest{stubPontiManifest()}})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	client := NewPontiClient(srv.URL, "ponti-test-key")
+	conn := NewPontiConnector(client)
+
+	if caps := conn.Capabilities(); len(caps) != 0 {
+		t.Fatalf("expected 0 capabilities while Ponti down, got %d", len(caps))
+	}
+
+	// Levantamos Ponti y forzamos refresh.
+	alive = true
+	if err := conn.Refresh(context.Background()); err != nil {
+		t.Fatalf("refresh after Ponti recovery: %v", err)
+	}
+	if caps := conn.Capabilities(); len(caps) != 3 {
+		t.Fatalf("expected 3 capabilities after refresh, got %d", len(caps))
 	}
 }

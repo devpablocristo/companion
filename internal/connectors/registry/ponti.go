@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,30 +16,67 @@ import (
 	domain "github.com/devpablocristo/companion/internal/connectors/usecases/domain"
 )
 
-// PontiConnector adapter de Companion a Ponti (read-only piloto).
+// pontiManifestDiscoveryTimeout limita el tiempo del fetch inicial al boot
+// para que un Ponti caído no bloquee el arranque de Companion.
+const pontiManifestDiscoveryTimeout = 5 * time.Second
+
+// pontiManifestCacheTTL controla cuánto tiempo Companion mantiene el
+// manifest cacheado antes de re-fetchear. Refresh manual (POST
+// /v1/connectors/refresh) bypassa el TTL.
+const pontiManifestCacheTTL = 5 * time.Minute
+
+// PontiConnector adapter de Companion a Ponti (read-only).
 //
-// La fuente de verdad del catálogo de capabilities es el manifest canónico
-// publicado por Ponti (`ai.CapabilityManifest`). Acá se mantiene una copia
-// hardcodeada del manifest mientras el discovery HTTP por request queda como
-// fase 2 (decisión D.2 del plan). El test del paquete corre
-// `ai.ValidateCapabilityManifest` para evitar drift.
+// El catálogo de capabilities (tools, schemas, executor refs, roles) se
+// descubre dinámicamente desde Ponti vía GET /api/v1/capabilities y se
+// cachea con TTL. Companion ya no mantiene una copia hardcoded — Ponti es
+// source of truth del manifest.
+//
+// Si la discovery falla al boot (Ponti caído, mal config), el connector
+// queda como `unavailable`: Capabilities() devuelve nil y Validate/Execute
+// fallan con error claro. Refresh() (manual u otro intento) lo reactiva.
 type PontiConnector struct {
-	client   *PontiClient
-	manifest ai.CapabilityManifest
+	client *PontiClient
+
+	mu        sync.RWMutex
+	manifest  ai.CapabilityManifest
+	cachedAt  time.Time
+	available bool
 }
 
-// NewPontiConnector crea el conector. Si client es nil el caller no debe
-// registrarlo en el Registry.
+// NewPontiConnector crea el conector y dispara una discovery best-effort.
+// Si client es nil el caller no debe registrarlo en el Registry.
 func NewPontiConnector(client *PontiClient) *PontiConnector {
-	return &PontiConnector{client: client, manifest: pontiInsightsManifest()}
+	p := &PontiConnector{client: client}
+	if client == nil {
+		return p
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), pontiManifestDiscoveryTimeout)
+	defer cancel()
+	if err := p.Refresh(ctx); err != nil {
+		slog.Warn("ponti capability discovery failed at boot — connector marked unavailable until refresh succeeds",
+			"error", err)
+	} else {
+		slog.Info("ponti capabilities discovered",
+			"manifest_id", p.manifest.ID,
+			"version", p.manifest.Version,
+			"tools", len(p.manifest.Tools))
+	}
+	return p
 }
 
 func (p *PontiConnector) ID() string   { return "ponti" }
 func (p *PontiConnector) Kind() string { return "ponti" }
 
-// Capabilities expande cada tool del manifest canónico en un
-// `domain.Capability` que el Registry y el runtime puedan consumir.
+// Capabilities devuelve el set de capabilities derivadas del manifest
+// descubierto. Vacío si no hay manifest cacheado (Ponti unreachable al boot
+// y nadie hizo refresh todavía).
 func (p *PontiConnector) Capabilities() []domain.Capability {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if !p.available {
+		return nil
+	}
 	out := make([]domain.Capability, 0, len(p.manifest.Tools))
 	for _, tool := range p.manifest.Tools {
 		out = append(out, capabilityFromTool(p.manifest, tool))
@@ -45,7 +84,45 @@ func (p *PontiConnector) Capabilities() []domain.Capability {
 	return out
 }
 
+// Refresh dispara una nueva discovery contra Ponti y actualiza el cache.
+// Lo invoca el POST /v1/connectors/refresh y también el constructor al boot.
+func (p *PontiConnector) Refresh(ctx context.Context) error {
+	if p.client == nil {
+		return fmt.Errorf("ponti client not configured")
+	}
+	manifest, err := p.client.DiscoverManifest(ctx)
+	if err != nil {
+		return err
+	}
+	p.mu.Lock()
+	p.manifest = manifest
+	p.cachedAt = time.Now()
+	p.available = true
+	p.mu.Unlock()
+	return nil
+}
+
+// ensureFresh re-fetcha si el cache está vencido. Llamado en el path de
+// Validate/Execute para minimizar drift sin pegar a Ponti en cada call.
+func (p *PontiConnector) ensureFresh(ctx context.Context) {
+	p.mu.RLock()
+	stale := !p.cachedAt.IsZero() && time.Since(p.cachedAt) > pontiManifestCacheTTL
+	missing := !p.available
+	p.mu.RUnlock()
+	if !stale && !missing {
+		return
+	}
+	if err := p.Refresh(ctx); err != nil {
+		slog.Warn("ponti capability refresh failed", "error", err, "stale", stale, "missing", missing)
+	}
+}
+
 func (p *PontiConnector) Validate(spec domain.ExecutionSpec) error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if !p.available {
+		return fmt.Errorf("ponti connector unavailable: capability manifest not loaded — try POST /v1/connectors/refresh")
+	}
 	if spec.Operation == "" {
 		return fmt.Errorf("operation is required")
 	}
@@ -58,6 +135,12 @@ func (p *PontiConnector) Validate(spec domain.ExecutionSpec) error {
 }
 
 func (p *PontiConnector) Execute(ctx context.Context, spec domain.ExecutionSpec) (domain.ExecutionResult, error) {
+	p.ensureFresh(ctx)
+
+	if !p.isAvailable() {
+		return domain.ExecutionResult{}, fmt.Errorf("ponti connector unavailable: capability manifest not loaded")
+	}
+
 	start := time.Now()
 
 	var params struct {
@@ -105,24 +188,30 @@ func (p *PontiConnector) Execute(ctx context.Context, spec domain.ExecutionSpec)
 	evidenceJSON, _ := json.Marshal(evidence)
 
 	return domain.ExecutionResult{
-		ID:              uuid.New(),
-		ConnectorID:     spec.ConnectorID,
-		OrgID:           spec.OrgID,
-		ActorID:         spec.ActorID,
-		Operation:       spec.Operation,
-		Status:          status,
-		ExternalRef:     fmt.Sprintf("ponti-%s", spec.Operation),
-		Payload:         spec.Payload,
-		ResultJSON:      raw,
-		EvidenceJSON:    evidenceJSON,
-		ErrorMessage:    errMsg,
-		Retryable:       execErr != nil,
-		DurationMS:      duration,
-		IdempotencyKey:  spec.IdempotencyKey,
-		TaskID:          spec.TaskID,
+		ID:                  uuid.New(),
+		ConnectorID:         spec.ConnectorID,
+		OrgID:               spec.OrgID,
+		ActorID:             spec.ActorID,
+		Operation:           spec.Operation,
+		Status:              status,
+		ExternalRef:         fmt.Sprintf("ponti-%s", spec.Operation),
+		Payload:             spec.Payload,
+		ResultJSON:          raw,
+		EvidenceJSON:        evidenceJSON,
+		ErrorMessage:        errMsg,
+		Retryable:           execErr != nil,
+		DurationMS:          duration,
+		IdempotencyKey:      spec.IdempotencyKey,
+		TaskID:              spec.TaskID,
 		GovernanceRequestID: spec.GovernanceRequestID,
-		CreatedAt:       time.Now().UTC(),
+		CreatedAt:           time.Now().UTC(),
 	}, nil
+}
+
+func (p *PontiConnector) isAvailable() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.available
 }
 
 // capabilityFromTool traduce un ai.CapabilityTool al modelo
@@ -157,128 +246,13 @@ func capabilityFromTool(m ai.CapabilityManifest, tool ai.CapabilityTool) domain.
 			Mode:     domain.TenantScopeSingleTenant,
 			Resolver: domain.TenantScopeResolverUser,
 		},
-		AuthMode:        domain.AuthMode{Type: "delegated_user"},
-		RequiredRoles:   append([]string(nil), tool.RequiredRoles...),
-		RequiredScopes:  []string{"companion:connectors:execute"},
-		RequiredModules: append([]string(nil), tool.RequiredModules...),
-		RequiresGovernance:  requiresGovernance,
-		InputSchema:     tool.InputSchema,
-		OutputSchema:    tool.OutputSchema,
-		EvidenceFields:  append([]string(nil), tool.EvidenceFields...),
-	}
-}
-
-// pontiInsightsManifest es la copia local del manifest canónico publicado
-// por Ponti. El test del paquete valida que pasa ai.ValidateCapabilityManifest
-// y que coincide en IDs/fields con la copia de Ponti.
-//
-// Cuando se implemente discovery dinámico (fase 2), esta función desaparece
-// y el manifest llega vía GET /api/v1/capabilities a Ponti.
-func pontiInsightsManifest() ai.CapabilityManifest {
-	roles := []string{"ponti.insights.viewer"}
-	modules := []string{"ponti", "insights"}
-
-	return ai.CapabilityManifest{
-		SchemaVersion: ai.CapabilityManifestSchemaVersion,
-		ID:            "ponti.insights",
-		Product:       "ponti",
-		Version:       "1.0.0",
-		TenantScope:   ai.CapabilityTenantScopeOrg,
-		Name:          "Ponti Insights",
-		Description:   "Read-only access to agricultural insights computed for the caller's tenant.",
-		Agents: []ai.CapabilityAgentDescriptor{
-			{
-				Name:        "ponti_insights",
-				Description: "Answers questions about active insights for the caller's tenant.",
-			},
-		},
-		Tools: []ai.CapabilityTool{
-			{
-				Name:        "ponti.insights.list",
-				Description: "Lists insights for the caller's tenant with optional filters.",
-				Mode:        ai.CapabilityModeRead,
-				SideEffect:  false,
-				RiskClass:   ai.CapabilityRiskLow,
-				InputSchema: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"limit":            map[string]any{"type": "integer", "minimum": 1, "maximum": 200},
-						"include_resolved": map[string]any{"type": "boolean"},
-					},
-				},
-				OutputSchema: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"items": map[string]any{"type": "array"},
-					},
-					"required": []string{"items"},
-				},
-				EvidenceFields: []string{"source_ref", "captured_at"},
-				CapabilityAuthz: ai.CapabilityAuthz{
-					RequiredRoles:   roles,
-					RequiredModules: modules,
-				},
-				CapabilityExecutor: ai.CapabilityExecutor{
-					ExecutorRef: "ponti-backend.insights.list",
-				},
-			},
-			{
-				Name:        "ponti.insights.summary",
-				Description: "Returns aggregate counts of insights by status and category for the tenant.",
-				Mode:        ai.CapabilityModeRead,
-				SideEffect:  false,
-				RiskClass:   ai.CapabilityRiskLow,
-				InputSchema: map[string]any{
-					"type":       "object",
-					"properties": map[string]any{},
-				},
-				OutputSchema: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"summary":  map[string]any{"type": "object"},
-						"evidence": map[string]any{"type": "object"},
-					},
-					"required": []string{"summary", "evidence"},
-				},
-				EvidenceFields: []string{"source_ref", "captured_at", "tenant_scope"},
-				CapabilityAuthz: ai.CapabilityAuthz{
-					RequiredRoles:   roles,
-					RequiredModules: modules,
-				},
-				CapabilityExecutor: ai.CapabilityExecutor{
-					ExecutorRef: "ponti-backend.insights.summary",
-				},
-			},
-			{
-				Name:        "ponti.insights.explain",
-				Description: "Returns an insight together with its provenance and evidence.",
-				Mode:        ai.CapabilityModeRead,
-				SideEffect:  false,
-				RiskClass:   ai.CapabilityRiskLow,
-				InputSchema: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"insight_id": map[string]any{"type": "string", "format": "uuid"},
-					},
-					"required": []string{"insight_id"},
-				},
-				OutputSchema: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"insight":  map[string]any{"type": "object"},
-						"evidence": map[string]any{"type": "object"},
-					},
-					"required": []string{"insight", "evidence"},
-				},
-				EvidenceFields: []string{"source_ref", "captured_at", "first_seen", "event_type", "entity"},
-				CapabilityAuthz: ai.CapabilityAuthz{
-					RequiredRoles:   roles,
-					RequiredModules: modules,
-				},
-				CapabilityExecutor: ai.CapabilityExecutor{
-					ExecutorRef: "ponti-backend.insights.explain",
-				},
-			},
-		},
+		AuthMode:           domain.AuthMode{Type: "delegated_user"},
+		RequiredRoles:      append([]string(nil), tool.RequiredRoles...),
+		RequiredScopes:     []string{"companion:connectors:execute"},
+		RequiredModules:    append([]string(nil), tool.RequiredModules...),
+		RequiresGovernance: requiresGovernance,
+		InputSchema:        tool.InputSchema,
+		OutputSchema:       tool.OutputSchema,
+		EvidenceFields:     append([]string(nil), tool.EvidenceFields...),
 	}
 }

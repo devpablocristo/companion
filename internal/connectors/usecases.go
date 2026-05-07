@@ -212,6 +212,13 @@ func (uc *Usecases) ListExecutions(ctx context.Context, connectorID uuid.UUID, l
 	return uc.repo.ListExecutions(ctx, connectorID, limit)
 }
 
+// RefreshConnectors invoca Refresh() en cada connector dinámico (los que
+// implementan registry.Refresher). Connectors estáticos se ignoran. Los
+// errores individuales viajan en cada item — el caller decide si reportar.
+func (uc *Usecases) RefreshConnectors(ctx context.Context) []registry.RefreshResult {
+	return uc.registry.Refresh(ctx)
+}
+
 // Capabilities lista las capacidades publicadas de todos los conectores registrados.
 func (uc *Usecases) Capabilities(filter domain.CapabilityFilter) []ConnectorCapabilities {
 	var out []ConnectorCapabilities

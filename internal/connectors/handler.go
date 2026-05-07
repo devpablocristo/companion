@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/devpablocristo/companion/internal/connectors/handler/dto"
+	"github.com/devpablocristo/companion/internal/connectors/registry"
 	domain "github.com/devpablocristo/companion/internal/connectors/usecases/domain"
 )
 
@@ -25,6 +26,7 @@ type connectorUsecase interface {
 	Execute(ctx context.Context, spec domain.ExecutionSpec) (domain.ExecutionResult, error)
 	ListExecutions(ctx context.Context, connectorID uuid.UUID, limit int) ([]domain.ExecutionResult, error)
 	Capabilities(filter domain.CapabilityFilter) []ConnectorCapabilities
+	RefreshConnectors(ctx context.Context) []registry.RefreshResult
 }
 
 // Handler HTTP adapter para conectores.
@@ -41,11 +43,25 @@ func NewHandler(uc connectorUsecase) *Handler {
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/connectors", h.list)
 	mux.HandleFunc("POST /v1/connectors", h.save)
+	mux.HandleFunc("POST /v1/connectors/refresh", h.refresh)
 	mux.HandleFunc("GET /v1/connectors/{id}", h.get)
 	mux.HandleFunc("DELETE /v1/connectors/{id}", h.delete)
 	mux.HandleFunc("POST /v1/connectors/execute", h.execute)
 	mux.HandleFunc("GET /v1/connectors/{id}/executions", h.listExecutions)
 	mux.HandleFunc("GET /v1/connectors/capabilities", h.capabilities)
+}
+
+func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
+	results := h.uc.RefreshConnectors(r.Context())
+	out := make([]dto.ConnectorRefreshResult, 0, len(results))
+	for _, res := range results {
+		out = append(out, dto.ConnectorRefreshResult{
+			ConnectorID: res.ConnectorID,
+			Refreshed:   res.Refreshed,
+			Error:       res.Error,
+		})
+	}
+	httpjson.WriteJSON(w, http.StatusOK, dto.ConnectorRefreshResponse{Results: out})
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {

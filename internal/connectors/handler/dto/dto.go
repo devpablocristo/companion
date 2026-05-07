@@ -20,6 +20,18 @@ type ConnectorResponse struct {
 	UpdatedAt string          `json:"updated_at"`
 }
 
+// ConnectorRefreshResult reporta el resultado de refresh por connector.
+type ConnectorRefreshResult struct {
+	ConnectorID string `json:"connector_id"`
+	Refreshed   bool   `json:"refreshed"`
+	Error       string `json:"error,omitempty"`
+}
+
+// ConnectorRefreshResponse respuesta de POST /v1/connectors/refresh.
+type ConnectorRefreshResponse struct {
+	Results []ConnectorRefreshResult `json:"results"`
+}
+
 // ConnectorListResponse lista de conectores.
 type ConnectorListResponse struct {
 	Connectors []ConnectorResponse `json:"connectors"`
