@@ -13,13 +13,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@clerk/localizations": "^4.5.7",
-    "@clerk/react": "^6.4.7",
+    "@clerk/localizations": "^4.6.1",
+    "@clerk/react": "^6.6.1",
     "@devpablocristo/core-authn": "^0.3.0",
     "@devpablocristo/core-browser": "^0.4.0",
     "@devpablocristo/core-http": "^0.2.0",
-    "react": "^19.2.5",
-    "react-dom": "^19.2.5"
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.2.4",
@@ -27,9 +27,9 @@
     "@types/react-dom": "^19.2.2",
     "@vitejs/plugin-react": "^6.0.1",
     "autoprefixer": "^10.5.0",
-    "postcss": "^8.5.13",
+    "postcss": "^8.5.14",
     "tailwindcss": "^4.2.2",
     "typescript": "^6.0.3",
-    "vite": "^8.0.10"
+    "vite": "^8.0.11"
   }
 }
