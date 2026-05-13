@@ -106,6 +106,10 @@ func (h *Handler) save(w http.ResponseWriter, r *http.Request) {
 	if !requireScope(w, r, scopeCompanionConnectorsAdmin) {
 		return
 	}
+	if !requestHasNoAuthContext(r) && principalOrgID(r) == "" {
+		httpjson.WriteFlatError(w, http.StatusForbidden, "FORBIDDEN", "connector save requires org context")
+		return
+	}
 	var body dto.SaveConnectorRequest
 	if err := httpjson.DecodeJSON(r, &body); err != nil {
 		httpjson.WriteFlatError(w, http.StatusBadRequest, "VALIDATION", "invalid json")
@@ -170,6 +174,10 @@ func (h *Handler) execute(w http.ResponseWriter, r *http.Request) {
 	if !requireScope(w, r, scopeCompanionConnectorsExecute) {
 		return
 	}
+	if !requestHasNoAuthContext(r) && (principalOrgID(r) == "" || principalActorID(r) == "") {
+		httpjson.WriteFlatError(w, http.StatusForbidden, "FORBIDDEN", "connector execution requires org and actor context")
+		return
+	}
 	var body dto.ExecuteRequest
 	if err := httpjson.DecodeJSON(r, &body); err != nil {
 		httpjson.WriteFlatError(w, http.StatusBadRequest, "VALIDATION", "invalid json")
@@ -195,6 +203,8 @@ func (h *Handler) execute(w http.ResponseWriter, r *http.Request) {
 		ConnectorID:    connID,
 		OrgID:          principalOrgID(r),
 		ActorID:        principalActorID(r),
+		ProductSurface: strings.TrimSpace(r.Header.Get("X-Product-Surface")),
+		AuthScopes:     parseHeaderValues(r.Header.Get("X-Auth-Scopes")),
 		Operation:      body.Operation,
 		Payload:        payload,
 		IdempotencyKey: body.IdempotencyKey,

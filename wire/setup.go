@@ -11,9 +11,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/devpablocristo/core/config/go/envconfig"
-	sharedpostgres "github.com/devpablocristo/core/databases/postgres/go"
-	"github.com/devpablocristo/core/http/go/health"
 	"github.com/devpablocristo/companion/internal/connectors"
 	"github.com/devpablocristo/companion/internal/connectors/registry"
 	governanceassist "github.com/devpablocristo/companion/internal/governance_assist"
@@ -22,12 +19,16 @@ import (
 	"github.com/devpablocristo/companion/internal/tasks"
 	"github.com/devpablocristo/companion/internal/watchers"
 	"github.com/devpablocristo/companion/internal/watchers/pymesclient"
+	"github.com/devpablocristo/core/config/go/envconfig"
+	sharedpostgres "github.com/devpablocristo/core/databases/postgres/go"
+	"github.com/devpablocristo/core/http/go/health"
 
 	memdomain "github.com/devpablocristo/companion/internal/memory/usecases/domain"
 )
 
 type taskMemoryAdapter struct {
-	uc *memory.Usecases
+	uc   *memory.Usecases
+	repo tasks.Repository
 }
 
 // taskOrgGetter resuelve el org_id de una task para que el handler de
@@ -48,13 +49,24 @@ func (a taskMemoryAdapter) UpsertTaskMemory(ctx context.Context, taskID uuid.UUI
 	if len(payload) == 0 {
 		payload = json.RawMessage(`{}`)
 	}
-	_, err := a.uc.Upsert(ctx, memory.UpsertInput{
-		Kind:        memdomain.MemoryKind(kind),
-		ScopeType:   memdomain.ScopeTask,
-		ScopeID:     taskID.String(),
-		Key:         key,
-		PayloadJSON: payload,
-		ContentText: contentText,
+	task, err := a.repo.GetTaskByID(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	_, err = a.uc.Upsert(ctx, memory.UpsertInput{
+		OrgID:           task.OrgID,
+		UserID:          task.CreatedBy,
+		ProductSurface:  "companion",
+		Kind:            memdomain.MemoryKind(kind),
+		MemoryType:      memdomain.TypeForKind(memdomain.MemoryKind(kind)),
+		ScopeType:       memdomain.ScopeTask,
+		ScopeID:         taskID.String(),
+		Key:             key,
+		PayloadJSON:     payload,
+		ContentText:     contentText,
+		ProvenanceJSON:  json.RawMessage(`{"source":"task_projection"}`),
+		Confidence:      1,
+		RetentionPolicy: "task",
 	})
 	return err
 }
@@ -67,11 +79,18 @@ func watcherInterval() time.Duration {
 	return envconfig.Duration("COMPANION_WATCHER_INTERVAL_SEC", 0)
 }
 
+func watcherSyncInterval() time.Duration {
+	return envconfig.Duration("COMPANION_WATCHER_SYNC_INTERVAL_SEC", watcherInterval())
+}
+
 // governanceGateEnforced lee el feature flag que activa el typed error
 // ErrGovernanceNotApproved (HTTP 412) en path de tasks. Default false: el caller
 // recibe ErrInvalidTaskState (HTTP 409) como antes. Activar a true en staging
 // y producción una vez verificado el comportamiento.
 func governanceGateEnforced() bool {
+	if envconfig.Bool("COMPANION_STRICT_GOVERNANCE", false) {
+		return true
+	}
 	return envconfig.Bool("COMPANION_GOVERNANCE_GATE_ENFORCED", false)
 }
 
@@ -136,7 +155,7 @@ func NewServer(cfg Config) (http.Handler, func(), error) {
 		connReg.Register(registry.NewPontiConnector(pontiClient))
 	}
 	connRepo := connectors.NewPostgresRepository(db)
-	governanceChecker := connectors.NewGovernanceCheckerAdapter(func(c context.Context, id uuid.UUID) (string, string, int, error) {
+	governanceChecker := connectors.NewGovernanceCheckerAdapter(func(c context.Context, id uuid.UUID) (connectors.GovernanceRequestMeta, int, error) {
 		return governanceGateway.GetRequestMeta(c, id.String())
 	})
 	connUC := connectors.NewUsecases(connRepo, connReg, governanceChecker)
@@ -151,25 +170,27 @@ func NewServer(cfg Config) (http.Handler, func(), error) {
 
 	// Watchers module
 	watcherRepo := watchers.NewPostgresRepository(db)
-	watcherUC := watchers.NewUsecases(watcherRepo, pymesClient, rc)
+	watcherUC := watchers.NewUsecases(watcherRepo, governanceGateway)
+	watcherUC.SetConnectorExecutor(connUC)
 	watcherHandler := watchers.NewHandler(watcherUC)
 
 	// Memory module
 	memRepo := memory.NewPostgresRepository(db)
 	memUC := memory.NewUsecases(memRepo)
 	memHandler := memory.NewHandler(memUC, taskOrgGetter{repo: repo})
-	uc.SetTaskMemory(taskMemoryAdapter{uc: memUC})
+	uc.SetTaskMemory(taskMemoryAdapter{uc: memUC, repo: repo})
 
 	// Runtime del compañero (LLM + tools + context)
 	llmProvider := runtime.NewProvider(cfg.LLMProvider, cfg.LLMAPIKey, cfg.LLMModel)
 	toolkit := runtime.NewToolKit(rc, memUC, watcherUC)
 	contextPorts := runtime.ContextPorts{
 		GovernanceClient: rc,
-		MemoryFind: func(c context.Context, st memdomain.ScopeType, sid string, k memdomain.MemoryKind, limit int) ([]memdomain.MemoryEntry, error) {
-			return memUC.Find(c, memory.FindQuery{ScopeType: st, ScopeID: sid, Kind: k, Limit: limit})
+		MemoryFind: func(c context.Context, orgID, userID, productSurface string, st memdomain.ScopeType, sid string, k memdomain.MemoryKind, limit int) ([]memdomain.MemoryEntry, error) {
+			return memUC.Find(c, memory.FindQuery{OrgID: orgID, UserID: userID, ProductSurface: productSurface, ScopeType: st, ScopeID: sid, Kind: k, Limit: limit})
 		},
 	}
 	orchestrator := runtime.NewOrchestrator(llmProvider, toolkit, contextPorts)
+	orchestrator.SetModel(cfg.LLMModel)
 	autonomy, err := defaultAutonomyLevel()
 	if err != nil {
 		db.Close()
@@ -231,6 +252,15 @@ func NewServer(cfg Config) (http.Handler, func(), error) {
 		prev := cleanup
 		cleanup = func() {
 			watcherCancel()
+			prev()
+		}
+	}
+	if d := watcherSyncInterval(); d > 0 {
+		watcherSyncCtx, watcherSyncCancel := context.WithCancel(context.Background())
+		go watcherUC.RunPendingProposalSyncLoop(watcherSyncCtx, d, 50)
+		prev := cleanup
+		cleanup = func() {
+			watcherSyncCancel()
 			prev()
 		}
 	}

@@ -23,6 +23,7 @@ func (a *OrchestratorAdapter) Run(ctx context.Context, in tasks.OrchestratorInpu
 	result, err := a.orch.Run(ctx, RunInput{
 		UserID:         in.UserID,
 		OrgID:          in.OrgID,
+		AuthScopes:     in.AuthScopes,
 		Message:        in.Message,
 		Messages:       convertMessages(in.Messages),
 		TaskID:         in.TaskID,

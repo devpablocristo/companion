@@ -45,6 +45,7 @@ func NewPostgresTraceRepository(db *sharedpostgres.DB) *PostgresTraceRepository 
 
 const selectRunTrace = `
 	SELECT run_id, org_id, user_id, task_id, product_surface, intent, autonomy_level,
+	       prompt_version, model,
 	       identity_chain_json, guardrail_events_json, tool_calls_json, error,
 	       started_at, completed_at
 	FROM companion_run_traces`
@@ -78,15 +79,18 @@ func (r *PostgresTraceRepository) Save(ctx context.Context, trace RunTrace, orgI
 	_, err = r.db.Pool().Exec(ctx, `
 		INSERT INTO companion_run_traces
 			(run_id, org_id, user_id, task_id, product_surface, intent, autonomy_level,
-			 identity_chain_json, guardrail_events_json, tool_calls_json, error,
+			 prompt_version, model, identity_chain_json, guardrail_events_json, tool_calls_json, error,
 			 started_at, completed_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 		ON CONFLICT (run_id) DO UPDATE SET
+			prompt_version        = EXCLUDED.prompt_version,
+			model                 = EXCLUDED.model,
 			guardrail_events_json = EXCLUDED.guardrail_events_json,
 			tool_calls_json       = EXCLUDED.tool_calls_json,
 			error                 = EXCLUDED.error,
 			completed_at          = EXCLUDED.completed_at
 	`, runID, orgID, userID, taskID, trace.ProductSurface, trace.Intent, string(trace.AutonomyLevel),
+		firstNonEmpty(trace.PromptVersion, SystemPromptVersion), trace.Model,
 		identityJSON, guardrailJSON, toolCallsJSON, errMsg,
 		trace.StartedAt, completedAt)
 	if err != nil {
@@ -155,17 +159,20 @@ type rowScanner interface {
 
 func scanRunTrace(row rowScanner) (StoredTrace, error) {
 	var (
-		st             StoredTrace
-		runID          uuid.UUID
-		taskID         *uuid.UUID
-		identityRaw    []byte
-		guardrailRaw   []byte
-		toolCallsRaw   []byte
-		autonomyLevel  string
-		completedAt    *time.Time
+		st            StoredTrace
+		runID         uuid.UUID
+		taskID        *uuid.UUID
+		identityRaw   []byte
+		guardrailRaw  []byte
+		toolCallsRaw  []byte
+		autonomyLevel string
+		promptVersion string
+		model         string
+		completedAt   *time.Time
 	)
 	err := row.Scan(
 		&runID, &st.OrgID, &st.UserID, &taskID, &st.ProductSurface, &st.Intent, &autonomyLevel,
+		&promptVersion, &model,
 		&identityRaw, &guardrailRaw, &toolCallsRaw, &st.Error,
 		&st.StartedAt, &completedAt,
 	)
@@ -175,6 +182,8 @@ func scanRunTrace(row rowScanner) (StoredTrace, error) {
 	st.RunID = runID.String()
 	st.TaskID = taskID
 	st.AutonomyLevel = AutonomyLevel(autonomyLevel)
+	st.PromptVersion = promptVersion
+	st.Model = model
 	if completedAt != nil {
 		st.CompletedAt = *completedAt
 	}
@@ -208,4 +217,13 @@ func emptyArrayIfNilTools(calls []ToolTrace) []ToolTrace {
 		return []ToolTrace{}
 	}
 	return calls
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
+	connectordomain "github.com/devpablocristo/companion/internal/connectors/usecases/domain"
 	"github.com/devpablocristo/core/governance/go/governanceclient"
 	"github.com/google/uuid"
 
@@ -156,7 +158,8 @@ func (f *fakePymes) SendWhatsAppText(_ context.Context, _, _, _ string) error {
 // --- governance fake ---
 
 type fakeGovernance struct {
-	decision string
+	decision    string
+	reportCalls int
 }
 
 func (f *fakeGovernance) SubmitRequest(_ context.Context, _ string, _ governanceclient.SubmitRequestBody) (governanceclient.SubmitResponse, error) {
@@ -171,12 +174,81 @@ func (f *fakeGovernance) GetRequest(_ context.Context, _ string) (governanceclie
 	return governanceclient.RequestSummary{Status: f.decision, Decision: f.decision}, 200, nil
 }
 
+func (f *fakeGovernance) ReportResult(_ context.Context, _ string, _ bool, _ map[string]any, _ int64, _ string) (int, error) {
+	f.reportCalls++
+	return 200, nil
+}
+
+type fakeConnectorExecutor struct {
+	connectorID uuid.UUID
+	execCalls   int
+	readCalls   int
+	lastSpec    connectordomain.ExecutionSpec
+	readResults map[string]json.RawMessage
+}
+
+func (f *fakeConnectorExecutor) ListConnectors(context.Context) ([]connectordomain.Connector, error) {
+	if f.connectorID == uuid.Nil {
+		f.connectorID = uuid.New()
+	}
+	return []connectordomain.Connector{{ID: f.connectorID, OrgID: "org-1", Kind: "pymes", Enabled: true}}, nil
+}
+
+func (f *fakeConnectorExecutor) BuildActionBinding(_ context.Context, spec connectordomain.ExecutionSpec) (map[string]any, string, error) {
+	return map[string]any{
+		"org_id":          spec.OrgID,
+		"actor_id":        spec.ActorID,
+		"actor_type":      "agent",
+		"product_surface": spec.ProductSurface,
+		"connector_id":    spec.ConnectorID.String(),
+		"capability_id":   spec.Operation,
+		"operation":       spec.Operation,
+		"target_system":   "pymes",
+		"target_resource": spec.ConnectorID.String(),
+		"payload_hash":    "payload-hash",
+		"idempotency_key": spec.IdempotencyKey,
+	}, "binding-hash", nil
+}
+
+func (f *fakeConnectorExecutor) Execute(_ context.Context, spec connectordomain.ExecutionSpec) (connectordomain.ExecutionResult, error) {
+	f.lastSpec = spec
+	if raw, ok := f.readResults[spec.Operation]; ok {
+		f.readCalls++
+		return connectordomain.ExecutionResult{
+			ID:          uuid.New(),
+			ConnectorID: spec.ConnectorID,
+			OrgID:       spec.OrgID,
+			ActorID:     spec.ActorID,
+			Operation:   spec.Operation,
+			Status:      connectordomain.ExecSuccess,
+			Payload:     spec.Payload,
+			ResultJSON:  raw,
+			CreatedAt:   time.Now().UTC(),
+		}, nil
+	}
+	f.execCalls++
+	return connectordomain.ExecutionResult{
+		ID:                  uuid.New(),
+		ConnectorID:         spec.ConnectorID,
+		OrgID:               spec.OrgID,
+		ActorID:             spec.ActorID,
+		Operation:           spec.Operation,
+		Status:              connectordomain.ExecSuccess,
+		ExternalRef:         "pymes-send",
+		Payload:             spec.Payload,
+		ResultJSON:          json.RawMessage(`{"sent":true}`),
+		IdempotencyKey:      spec.IdempotencyKey,
+		GovernanceRequestID: spec.GovernanceRequestID,
+		CreatedAt:           time.Now().UTC(),
+	}, nil
+}
+
 // --- tests ---
 
 func TestUsecases_Create(t *testing.T) {
 	t.Parallel()
 	repo := newFakeRepo()
-	uc := NewUsecases(repo, &fakePymes{}, &fakeGovernance{decision: "allowed"})
+	uc := NewUsecases(repo, &fakeGovernance{decision: "allowed"})
 
 	w, err := uc.Create(context.Background(), CreateWatcherInput{
 		OrgID:       "org-1",
@@ -199,7 +271,7 @@ func TestUsecases_Create(t *testing.T) {
 func TestUsecases_UpdatePartialFields(t *testing.T) {
 	t.Parallel()
 	repo := newFakeRepo()
-	uc := NewUsecases(repo, &fakePymes{}, &fakeGovernance{decision: "allowed"})
+	uc := NewUsecases(repo, &fakeGovernance{decision: "allowed"})
 
 	w, _ := uc.Create(context.Background(), CreateWatcherInput{
 		OrgID: "org-1", Name: "Original", WatcherType: domain.WatcherLowStock,
@@ -226,7 +298,7 @@ func TestUsecases_UpdatePartialFields(t *testing.T) {
 func TestUsecases_RunWatcher_DisabledReturnsError(t *testing.T) {
 	t.Parallel()
 	repo := newFakeRepo()
-	uc := NewUsecases(repo, &fakePymes{}, &fakeGovernance{decision: "allowed"})
+	uc := NewUsecases(repo, &fakeGovernance{decision: "allowed"})
 
 	w, _ := uc.Create(context.Background(), CreateWatcherInput{
 		OrgID: "org-1", Name: "Disabled", WatcherType: domain.WatcherLowStock,
@@ -241,15 +313,16 @@ func TestUsecases_RunWatcher_DisabledReturnsError(t *testing.T) {
 
 func TestUsecases_RunWatcher_StaleWorkOrders_AutoExecutes(t *testing.T) {
 	t.Parallel()
-	pymes := &fakePymes{
-		staleItems: []domain.PymesItem{
-			{ID: "wo-1", Type: "work_order", Name: "Orden atrasada", PartyID: "party-1"},
-			{ID: "wo-2", Type: "work_order", Name: "Otra orden", PartyID: "party-2"},
-		},
-	}
 	governance := &fakeGovernance{decision: "allowed"}
 	repo := newFakeRepo()
-	uc := NewUsecases(repo, pymes, governance)
+	uc := NewUsecases(repo, governance)
+	executor := &fakeConnectorExecutor{readResults: map[string]json.RawMessage{
+		"pymes.get_work_orders": json.RawMessage(`[
+			{"id":"wo-1","type":"work_order","name":"Orden atrasada","party_id":"party-1"},
+			{"id":"wo-2","type":"work_order","name":"Otra orden","party_id":"party-2"}
+		]`),
+	}}
+	uc.SetConnectorExecutor(executor)
 
 	w, _ := uc.Create(context.Background(), CreateWatcherInput{
 		OrgID: "org-1", Name: "Stale WO", WatcherType: domain.WatcherStaleWorkOrders,
@@ -269,8 +342,14 @@ func TestUsecases_RunWatcher_StaleWorkOrders_AutoExecutes(t *testing.T) {
 	if result.Executed != 2 {
 		t.Fatalf("expected 2 executed, got %d", result.Executed)
 	}
-	if pymes.sendCalls != 2 {
-		t.Fatalf("expected 2 WhatsApp sends, got %d", pymes.sendCalls)
+	if executor.execCalls != 2 {
+		t.Fatalf("expected 2 connector executions, got %d", executor.execCalls)
+	}
+	if executor.readCalls != 1 {
+		t.Fatalf("expected 1 read capability execution, got %d", executor.readCalls)
+	}
+	if governance.reportCalls != 2 {
+		t.Fatalf("expected 2 governance result reports, got %d", governance.reportCalls)
 	}
 	if len(repo.proposals) != 2 {
 		t.Fatalf("expected 2 persisted proposals, got %d", len(repo.proposals))
@@ -279,14 +358,13 @@ func TestUsecases_RunWatcher_StaleWorkOrders_AutoExecutes(t *testing.T) {
 
 func TestUsecases_RunWatcher_DeniedSkipsExecution(t *testing.T) {
 	t.Parallel()
-	pymes := &fakePymes{
-		staleItems: []domain.PymesItem{
-			{ID: "wo-1", Type: "work_order", Name: "Denied order", PartyID: "party-1"},
-		},
-	}
 	governance := &fakeGovernance{decision: "denied"}
 	repo := newFakeRepo()
-	uc := NewUsecases(repo, pymes, governance)
+	uc := NewUsecases(repo, governance)
+	executor := &fakeConnectorExecutor{readResults: map[string]json.RawMessage{
+		"pymes.get_work_orders": json.RawMessage(`[{"id":"wo-1","type":"work_order","name":"Denied order","party_id":"party-1"}]`),
+	}}
+	uc.SetConnectorExecutor(executor)
 
 	w, _ := uc.Create(context.Background(), CreateWatcherInput{
 		OrgID: "org-1", Name: "Denied WO", WatcherType: domain.WatcherStaleWorkOrders,
@@ -300,15 +378,18 @@ func TestUsecases_RunWatcher_DeniedSkipsExecution(t *testing.T) {
 	if result.Executed != 0 {
 		t.Fatalf("expected 0 executed when denied, got %d", result.Executed)
 	}
-	if pymes.sendCalls != 0 {
-		t.Fatalf("expected 0 sends when denied, got %d", pymes.sendCalls)
+	if executor.execCalls != 0 {
+		t.Fatalf("expected 0 connector executions when denied, got %d", executor.execCalls)
+	}
+	if governance.reportCalls != 0 {
+		t.Fatalf("expected 0 governance reports when denied, got %d", governance.reportCalls)
 	}
 }
 
 func TestUsecases_Delete(t *testing.T) {
 	t.Parallel()
 	repo := newFakeRepo()
-	uc := NewUsecases(repo, &fakePymes{}, &fakeGovernance{})
+	uc := NewUsecases(repo, &fakeGovernance{})
 
 	w, _ := uc.Create(context.Background(), CreateWatcherInput{
 		OrgID: "org-1", Name: "To Delete", WatcherType: domain.WatcherLowStock,

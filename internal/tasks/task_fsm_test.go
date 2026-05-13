@@ -3,8 +3,8 @@ package tasks
 import (
 	"testing"
 
-	"github.com/devpablocristo/core/governance/go/governanceclient"
 	domain "github.com/devpablocristo/companion/internal/tasks/usecases/domain"
+	"github.com/devpablocristo/core/governance/go/governanceclient"
 )
 
 func TestEventFromSubmitResponse(t *testing.T) {

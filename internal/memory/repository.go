@@ -10,8 +10,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	sharedpostgres "github.com/devpablocristo/core/databases/postgres/go"
 	domain "github.com/devpablocristo/companion/internal/memory/usecases/domain"
+	sharedpostgres "github.com/devpablocristo/core/databases/postgres/go"
 )
 
 // PostgresRepository implementación PostgreSQL del repositorio de memoria.
@@ -25,7 +25,8 @@ func NewPostgresRepository(db *sharedpostgres.DB) *PostgresRepository {
 }
 
 const selectMemory = `
-	SELECT id, kind, scope_type, scope_id, key, payload_json, content_text,
+	SELECT id, org_id, user_id, product_surface, kind, memory_type, classification, scope_type, scope_id, key,
+	       payload_json, content_text, provenance_json, confidence, retention_policy,
 	       version, created_at, updated_at, expires_at
 	FROM companion_memory_entries`
 
@@ -42,9 +43,12 @@ func (r *PostgresRepository) Upsert(ctx context.Context, e domain.MemoryEntry) (
 
 		_, err := r.db.Pool().Exec(ctx, `
 			INSERT INTO companion_memory_entries
-				(id, kind, scope_type, scope_id, key, payload_json, content_text, version, created_at, updated_at, expires_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-		`, e.ID, e.Kind, e.ScopeType, e.ScopeID, e.Key, e.PayloadJSON, e.ContentText,
+				(id, org_id, user_id, product_surface, kind, memory_type, classification, scope_type, scope_id, key,
+				 payload_json, content_text, provenance_json, confidence, retention_policy,
+				 version, created_at, updated_at, expires_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+		`, e.ID, e.OrgID, e.UserID, e.ProductSurface, e.Kind, e.MemoryType, e.Classification, e.ScopeType, e.ScopeID, e.Key,
+			e.PayloadJSON, e.ContentText, e.ProvenanceJSON, e.Confidence, e.RetentionPolicy,
 			e.Version, e.CreatedAt, e.UpdatedAt, e.ExpiresAt)
 		if err != nil {
 			return domain.MemoryEntry{}, fmt.Errorf("insert memory: %w", err)
@@ -56,9 +60,13 @@ func (r *PostgresRepository) Upsert(ctx context.Context, e domain.MemoryEntry) (
 	newVersion := e.Version + 1
 	tag, err := r.db.Pool().Exec(ctx, `
 		UPDATE companion_memory_entries
-		SET payload_json = $3, content_text = $4, version = $5, updated_at = $6, expires_at = $7
+		SET org_id = $3, user_id = $4, product_surface = $5, memory_type = $6, classification = $7,
+		    payload_json = $8, content_text = $9, provenance_json = $10, confidence = $11,
+		    retention_policy = $12, version = $13, updated_at = $14, expires_at = $15
 		WHERE id = $1 AND version = $2
-	`, e.ID, e.Version, e.PayloadJSON, e.ContentText, newVersion, now, e.ExpiresAt)
+	`, e.ID, e.Version, e.OrgID, e.UserID, e.ProductSurface, e.MemoryType, e.Classification,
+		e.PayloadJSON, e.ContentText, e.ProvenanceJSON, e.Confidence, e.RetentionPolicy,
+		newVersion, now, e.ExpiresAt)
 	if err != nil {
 		return domain.MemoryEntry{}, fmt.Errorf("update memory: %w", err)
 	}
@@ -84,8 +92,9 @@ func (r *PostgresRepository) Get(ctx context.Context, id uuid.UUID) (domain.Memo
 }
 
 // GetByScopeKey obtiene una entrada de memoria por scope, kind y key.
-func (r *PostgresRepository) GetByScopeKey(ctx context.Context, scopeType domain.ScopeType, scopeID string, kind domain.MemoryKind, key string) (domain.MemoryEntry, error) {
-	row := r.db.Pool().QueryRow(ctx, selectMemory+` WHERE scope_type = $1 AND scope_id = $2 AND kind = $3 AND key = $4`, scopeType, scopeID, kind, key)
+func (r *PostgresRepository) GetByScopeKey(ctx context.Context, orgID, productSurface string, scopeType domain.ScopeType, scopeID string, kind domain.MemoryKind, key string) (domain.MemoryEntry, error) {
+	row := r.db.Pool().QueryRow(ctx, selectMemory+` WHERE org_id = $1 AND product_surface = $2 AND scope_type = $3 AND scope_id = $4 AND kind = $5 AND key = $6`,
+		orgID, productSurface, scopeType, scopeID, kind, key)
 	entry, err := scanMemoryEntry(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -102,18 +111,23 @@ func (r *PostgresRepository) Find(ctx context.Context, q FindQuery) ([]domain.Me
 		q.Limit = 50
 	}
 
-	query := selectMemory + ` WHERE scope_type = $1 AND scope_id = $2`
-	args := []any{q.ScopeType, q.ScopeID}
+	query := selectMemory + ` WHERE org_id = $1 AND product_surface = $2 AND scope_type = $3 AND scope_id = $4`
+	args := []any{q.OrgID, q.ProductSurface, q.ScopeType, q.ScopeID}
+	if q.UserID != "" {
+		query += fmt.Sprintf(` AND (user_id = '' OR user_id = $%d)`, len(args)+1)
+		args = append(args, q.UserID)
+	}
 
 	if q.Kind != "" {
-		query += ` AND kind = $3`
+		query += fmt.Sprintf(` AND kind = $%d`, len(args)+1)
 		args = append(args, q.Kind)
-		query += fmt.Sprintf(` ORDER BY updated_at DESC LIMIT $%d`, len(args)+1)
-		args = append(args, q.Limit)
-	} else {
-		query += fmt.Sprintf(` ORDER BY updated_at DESC LIMIT $%d`, len(args)+1)
-		args = append(args, q.Limit)
 	}
+	if q.MemoryType != "" {
+		query += fmt.Sprintf(` AND memory_type = $%d`, len(args)+1)
+		args = append(args, q.MemoryType)
+	}
+	query += fmt.Sprintf(` ORDER BY updated_at DESC LIMIT $%d`, len(args)+1)
+	args = append(args, q.Limit)
 
 	rows, err := r.db.Pool().Query(ctx, query, args...)
 	if err != nil {
@@ -181,8 +195,8 @@ func scanMemoryEntry(row rowScanner) (domain.MemoryEntry, error) {
 	var expiresAt *time.Time
 
 	err := row.Scan(
-		&e.ID, &e.Kind, &e.ScopeType, &e.ScopeID, &e.Key,
-		&payloadRaw, &e.ContentText, &e.Version,
+		&e.ID, &e.OrgID, &e.UserID, &e.ProductSurface, &e.Kind, &e.MemoryType, &e.Classification, &e.ScopeType, &e.ScopeID, &e.Key,
+		&payloadRaw, &e.ContentText, &e.ProvenanceJSON, &e.Confidence, &e.RetentionPolicy, &e.Version,
 		&e.CreatedAt, &e.UpdatedAt, &expiresAt,
 	)
 	if err != nil {
@@ -190,6 +204,24 @@ func scanMemoryEntry(row rowScanner) (domain.MemoryEntry, error) {
 	}
 	if payloadRaw != nil {
 		e.PayloadJSON = json.RawMessage(payloadRaw)
+	}
+	if len(e.ProvenanceJSON) == 0 {
+		e.ProvenanceJSON = json.RawMessage(`{}`)
+	}
+	if e.ProductSurface == "" {
+		e.ProductSurface = "companion"
+	}
+	if e.MemoryType == "" {
+		e.MemoryType = domain.TypeForKind(e.Kind)
+	}
+	if e.Classification == "" {
+		e.Classification = domain.ClassForKind(e.Kind)
+	}
+	if e.Confidence == 0 {
+		e.Confidence = 1
+	}
+	if e.RetentionPolicy == "" {
+		e.RetentionPolicy = "default"
 	}
 	e.ExpiresAt = expiresAt
 	return e, nil

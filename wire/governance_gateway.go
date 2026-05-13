@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	connectors "github.com/devpablocristo/companion/internal/connectors"
 	"github.com/devpablocristo/core/governance/go/governanceclient"
 )
 
@@ -53,28 +54,35 @@ func (g *governanceGateway) GetRequest(ctx context.Context, id string) (governan
 	return g.client.GetRequest(ctx, id)
 }
 
-func (g *governanceGateway) GetRequestMeta(ctx context.Context, id string) (status string, orgID string, httpStatus int, err error) {
+func (g *governanceGateway) GetRequestMeta(ctx context.Context, id string) (connectors.GovernanceRequestMeta, int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.baseURL+"/v1/requests/"+id, nil)
 	if err != nil {
-		return "", "", 0, fmt.Errorf("build governance get request: %w", err)
+		return connectors.GovernanceRequestMeta{}, 0, fmt.Errorf("build governance get request: %w", err)
 	}
 	req.Header.Set("X-API-Key", g.apiKey)
 	resp, err := g.http.Do(req)
 	if err != nil {
-		return "", "", 0, fmt.Errorf("get governance request: %w", err)
+		return connectors.GovernanceRequestMeta{}, 0, fmt.Errorf("get governance request: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", "", resp.StatusCode, nil
+		return connectors.GovernanceRequestMeta{}, resp.StatusCode, nil
 	}
 	var body struct {
-		Status string `json:"status"`
-		OrgID  string `json:"org_id"`
+		Status        string         `json:"status"`
+		OrgID         string         `json:"org_id"`
+		BindingHash   string         `json:"binding_hash"`
+		ActionBinding map[string]any `json:"action_binding"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return "", "", resp.StatusCode, fmt.Errorf("decode governance get response: %w", err)
+		return connectors.GovernanceRequestMeta{}, resp.StatusCode, fmt.Errorf("decode governance get response: %w", err)
 	}
-	return body.Status, body.OrgID, resp.StatusCode, nil
+	return connectors.GovernanceRequestMeta{
+		Status:        body.Status,
+		OrgID:         body.OrgID,
+		BindingHash:   body.BindingHash,
+		ActionBinding: body.ActionBinding,
+	}, resp.StatusCode, nil
 }
 
 func (g *governanceGateway) ReportResult(ctx context.Context, id string, success bool, result map[string]any, durationMS int64, errorMessage string) (int, error) {
@@ -82,6 +90,9 @@ func (g *governanceGateway) ReportResult(ctx context.Context, id string, success
 		"success":     success,
 		"result":      result,
 		"duration_ms": durationMS,
+	}
+	if resultID, _ := result["connector_execution_id"].(string); strings.TrimSpace(resultID) != "" {
+		payload["result_id"] = strings.TrimSpace(resultID)
 	}
 	if strings.TrimSpace(errorMessage) != "" {
 		payload["error_message"] = errorMessage

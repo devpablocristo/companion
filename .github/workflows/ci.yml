@@ -39,6 +39,9 @@ jobs:
       - name: check governance imports (no embedded engine)
         run: bash scripts/quality/check-governance-imports.sh
 
+      - name: check side effects pipeline
+        run: bash scripts/quality/check-side-effects-pipeline.sh
+
   console:
     name: console
     runs-on: ubuntu-latest

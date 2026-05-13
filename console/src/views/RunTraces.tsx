@@ -33,6 +33,8 @@ interface RunTrace {
   product_surface: string
   intent: string
   autonomy_level: string
+  prompt_version?: string
+  model?: string
   identity_chain: IdentityChain
   guardrail_events?: GuardrailEvent[]
   tool_calls?: ToolTrace[]
@@ -122,6 +124,8 @@ export default function RunTraces({ runId }: { runId?: string | null }) {
           <div><span className="text-gray-500">Intent:</span> {selected.intent}</div>
           <div><span className="text-gray-500">Surface:</span> {selected.product_surface}</div>
           <div><span className="text-gray-500">Autonomy:</span> {selected.autonomy_level}</div>
+          <div><span className="text-gray-500">Prompt:</span> {selected.prompt_version || '—'}</div>
+          <div><span className="text-gray-500">Model:</span> {selected.model || '—'}</div>
           <div><span className="text-gray-500">Duration:</span> {formatDuration(selected.started_at, selected.completed_at)}</div>
           {selected.task_id && <div><span className="text-gray-500">Task:</span> <span className="font-mono text-xs">{selected.task_id}</span></div>}
           {selected.error && <div className="col-span-2"><span className="text-red-400">Error:</span> {selected.error}</div>}

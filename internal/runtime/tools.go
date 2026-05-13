@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/devpablocristo/core/governance/go/governanceclient"
 
@@ -20,12 +21,25 @@ type ToolHandler func(ctx context.Context, args json.RawMessage) (string, error)
 type ToolKit struct {
 	Schemas  []ToolSchema
 	Handlers map[string]ToolHandler
+	policies map[string]toolPolicy
 }
+
+type toolPolicy struct {
+	RequiresTenant   bool
+	RequiresUser     bool
+	RequiredAnyScope []string
+}
+
+const (
+	scopeCompanionGovernanceAdmin = "companion:governance:admin"
+	scopeCompanionWatchersRead    = "companion:watchers:read"
+)
 
 // NewToolKit crea el kit de tools con las dependencias inyectadas.
 func NewToolKit(rc *governanceclient.Client, memUC *memory.Usecases, watcherUC *watchers.Usecases) *ToolKit {
 	tk := &ToolKit{
 		Handlers: make(map[string]ToolHandler),
+		policies: make(map[string]toolPolicy),
 	}
 
 	// --- get_overview: resumen de estado ---
@@ -36,20 +50,24 @@ func NewToolKit(rc *governanceclient.Client, memUC *memory.Usecases, watcherUC *
 			"type":       "object",
 			"properties": map[string]any{},
 		},
-	}, func(ctx context.Context, _ json.RawMessage) (string, error) {
+	}, toolPolicy{RequiresTenant: true}, func(ctx context.Context, _ json.RawMessage) (string, error) {
 		var parts []string
+		id := IdentityFromContext(ctx)
+		if strings.TrimSpace(id.OrgID) == "" {
+			return `{"error":"tenant context required"}`, nil
+		}
 
 		// Aprobaciones pendientes
-		if rc != nil {
+		if rc != nil && hasAnyScope(id.AuthScopes, scopeCompanionGovernanceAdmin) {
 			st, raw, err := rc.ListPendingApprovals(ctx)
 			if err == nil && st == 200 {
-				parts = append(parts, fmt.Sprintf("Aprobaciones pendientes (raw): %s", string(raw)))
+				parts = append(parts, summarizeApprovals(raw))
 			}
 		}
 
 		// Watchers activos
 		if watcherUC != nil {
-			wList, err := watcherUC.List(ctx, "")
+			wList, err := watcherUC.List(ctx, id.OrgID)
 			if err == nil {
 				active := 0
 				for _, w := range wList {
@@ -80,7 +98,7 @@ func NewToolKit(rc *governanceclient.Client, memUC *memory.Usecases, watcherUC *
 			"type":       "object",
 			"properties": map[string]any{},
 		},
-	}, func(ctx context.Context, _ json.RawMessage) (string, error) {
+	}, toolPolicy{RequiresTenant: true, RequiredAnyScope: []string{scopeCompanionGovernanceAdmin}}, func(ctx context.Context, _ json.RawMessage) (string, error) {
 		if rc == nil {
 			return `{"approvals": [], "message": "governance no configurado"}`, nil
 		}
@@ -102,7 +120,7 @@ func NewToolKit(rc *governanceclient.Client, memUC *memory.Usecases, watcherUC *
 			"type":       "object",
 			"properties": map[string]any{},
 		},
-	}, func(ctx context.Context, _ json.RawMessage) (string, error) {
+	}, toolPolicy{RequiresTenant: true, RequiredAnyScope: []string{scopeCompanionGovernanceAdmin}}, func(ctx context.Context, _ json.RawMessage) (string, error) {
 		if rc == nil {
 			return `{"policies": []}`, nil
 		}
@@ -124,11 +142,15 @@ func NewToolKit(rc *governanceclient.Client, memUC *memory.Usecases, watcherUC *
 			"type":       "object",
 			"properties": map[string]any{},
 		},
-	}, func(ctx context.Context, _ json.RawMessage) (string, error) {
+	}, toolPolicy{RequiresTenant: true, RequiredAnyScope: []string{scopeCompanionWatchersRead}}, func(ctx context.Context, _ json.RawMessage) (string, error) {
 		if watcherUC == nil {
 			return `{"watchers": []}`, nil
 		}
-		wList, err := watcherUC.List(ctx, "")
+		id := IdentityFromContext(ctx)
+		if strings.TrimSpace(id.OrgID) == "" {
+			return `{"error":"tenant context required"}`, nil
+		}
+		wList, err := watcherUC.List(ctx, id.OrgID)
 		if err != nil {
 			return "", fmt.Errorf("list watchers: %w", err)
 		}
@@ -152,7 +174,7 @@ func NewToolKit(rc *governanceclient.Client, memUC *memory.Usecases, watcherUC *
 			},
 			"required": []string{"key", "content"},
 		},
-	}, func(ctx context.Context, args json.RawMessage) (string, error) {
+	}, toolPolicy{RequiresTenant: true, RequiresUser: true}, func(ctx context.Context, args json.RawMessage) (string, error) {
 		var input struct {
 			Key     string `json:"key"`
 			Content string `json:"content"`
@@ -166,7 +188,7 @@ func NewToolKit(rc *governanceclient.Client, memUC *memory.Usecases, watcherUC *
 		}
 		id := IdentityFromContext(ctx)
 		scope := memdomain.ScopeUser
-		scopeID := id.UserID
+		scopeID := tenantUserMemoryScopeID(id.OrgID, id.UserID)
 		kind := memdomain.MemoryUserPreference
 		if input.Scope == "org" {
 			scope = memdomain.ScopeOrg
@@ -174,14 +196,21 @@ func NewToolKit(rc *governanceclient.Client, memUC *memory.Usecases, watcherUC *
 			kind = memdomain.MemoryPlaybook
 		}
 		if scopeID == "" {
-			scopeID = "default"
+			return `{"error":"identity context required"}`, nil
 		}
 		_, err := memUC.Upsert(ctx, memory.UpsertInput{
-			Kind:        kind,
-			ScopeType:   scope,
-			ScopeID:     scopeID,
-			Key:         input.Key,
-			ContentText: input.Content,
+			OrgID:           id.OrgID,
+			UserID:          id.UserID,
+			ProductSurface:  productSurfaceFromIdentity(id),
+			Kind:            kind,
+			MemoryType:      memdomain.TypeForKind(kind),
+			ScopeType:       scope,
+			ScopeID:         scopeID,
+			Key:             input.Key,
+			ContentText:     input.Content,
+			ProvenanceJSON:  json.RawMessage(`{"source":"llm_tool","tool":"remember"}`),
+			Confidence:      1,
+			RetentionPolicy: "default",
 		})
 		if err != nil {
 			return "", fmt.Errorf("remember: %w", err)
@@ -199,7 +228,7 @@ func NewToolKit(rc *governanceclient.Client, memUC *memory.Usecases, watcherUC *
 				"scope": map[string]any{"type": "string", "description": "user o org", "enum": []string{"user", "org"}},
 			},
 		},
-	}, func(ctx context.Context, args json.RawMessage) (string, error) {
+	}, toolPolicy{RequiresTenant: true, RequiresUser: true}, func(ctx context.Context, args json.RawMessage) (string, error) {
 		var input struct {
 			Scope string `json:"scope"`
 		}
@@ -211,7 +240,7 @@ func NewToolKit(rc *governanceclient.Client, memUC *memory.Usecases, watcherUC *
 		}
 		id := IdentityFromContext(ctx)
 		scope := memdomain.ScopeUser
-		scopeID := id.UserID
+		scopeID := tenantUserMemoryScopeID(id.OrgID, id.UserID)
 		kind := memdomain.MemoryUserPreference
 		if input.Scope == "org" {
 			scope = memdomain.ScopeOrg
@@ -219,13 +248,16 @@ func NewToolKit(rc *governanceclient.Client, memUC *memory.Usecases, watcherUC *
 			kind = memdomain.MemoryPlaybook
 		}
 		if scopeID == "" {
-			scopeID = "default"
+			return `{"memories": [], "error":"identity context required"}`, nil
 		}
 		entries, err := memUC.Find(ctx, memory.FindQuery{
-			ScopeType: scope,
-			ScopeID:   scopeID,
-			Kind:      kind,
-			Limit:     10,
+			OrgID:          id.OrgID,
+			UserID:         id.UserID,
+			ProductSurface: productSurfaceFromIdentity(id),
+			ScopeType:      scope,
+			ScopeID:        scopeID,
+			Kind:           kind,
+			Limit:          10,
 		})
 		if err != nil {
 			return "", fmt.Errorf("recall: %w", err)
@@ -248,9 +280,76 @@ func NewToolKit(rc *governanceclient.Client, memUC *memory.Usecases, watcherUC *
 	return tk
 }
 
-func (tk *ToolKit) add(schema ToolSchema, handler ToolHandler) {
+func (tk *ToolKit) add(schema ToolSchema, policy toolPolicy, handler ToolHandler) {
 	tk.Schemas = append(tk.Schemas, schema)
 	tk.Handlers[schema.Name] = handler
+	tk.policies[schema.Name] = policy
+}
+
+func (tk *ToolKit) SchemasFor(identity IdentityChain, intent string) []ToolSchema {
+	if tk == nil {
+		return nil
+	}
+	out := make([]ToolSchema, 0, len(tk.Schemas))
+	for _, schema := range tk.Schemas {
+		if tk.CanUseTool(schema.Name, identity) {
+			out = append(out, schema)
+		}
+	}
+	return out
+}
+
+func (tk *ToolKit) CanUseTool(name string, identity IdentityChain) bool {
+	if tk == nil {
+		return false
+	}
+	policy, ok := tk.policies[name]
+	if !ok {
+		return true
+	}
+	if policy.RequiresTenant && strings.TrimSpace(identity.Tenant) == "" {
+		return false
+	}
+	if policy.RequiresUser && strings.TrimSpace(identity.InitiatingUser) == "" {
+		return false
+	}
+	if len(policy.RequiredAnyScope) > 0 && !hasAnyScope(identity.AuthScopes, policy.RequiredAnyScope...) {
+		return false
+	}
+	return true
+}
+
+func productSurfaceFromIdentity(id Identity) string {
+	if value := strings.TrimSpace(id.ProductSurface); value != "" {
+		return value
+	}
+	return DefaultProductSurface
+}
+
+func summarizeApprovals(raw []byte) string {
+	var approvals struct {
+		Data []struct {
+			ID         string `json:"id"`
+			ActionType string `json:"action_type"`
+			RiskLevel  string `json:"risk_level"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &approvals); err != nil {
+		return "Aprobaciones pendientes: resumen no disponible"
+	}
+	count := len(approvals.Data)
+	if count == 0 {
+		return "Aprobaciones pendientes: 0"
+	}
+	byRisk := make(map[string]int)
+	for _, approval := range approvals.Data {
+		risk := strings.TrimSpace(approval.RiskLevel)
+		if risk == "" {
+			risk = "unknown"
+		}
+		byRisk[risk]++
+	}
+	return fmt.Sprintf("Aprobaciones pendientes: %d (por riesgo: %v)", count, byRisk)
 }
 
 // ExecuteTool ejecuta un tool por nombre. Regla dura: loguea pero nunca expone errores internos.

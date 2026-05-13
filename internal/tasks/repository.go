@@ -11,8 +11,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	sharedpostgres "github.com/devpablocristo/core/databases/postgres/go"
 	domain "github.com/devpablocristo/companion/internal/tasks/usecases/domain"
+	sharedpostgres "github.com/devpablocristo/core/databases/postgres/go"
 )
 
 var ErrNotFound = domainerr.NotFound("not found")
@@ -112,7 +112,7 @@ func (r *PostgresRepository) ListTasks(ctx context.Context, orgID string, limit 
 	)
 	if orgID != "" {
 		rows, err = r.db.Pool().Query(ctx,
-			selectTask+` WHERE t.org_id = $1 OR t.org_id IS NULL OR t.org_id = ''
+			selectTask+` WHERE t.org_id = $1
 				ORDER BY t.updated_at DESC LIMIT $2`,
 			orgID, limit)
 	} else {

@@ -14,7 +14,7 @@ func TestHandlerCreateWatcherDerivesOrgFromPrincipal(t *testing.T) {
 	t.Parallel()
 
 	mux := http.NewServeMux()
-	NewHandler(NewUsecases(newFakeRepo(), nil, nil)).Register(mux)
+	NewHandler(NewUsecases(newFakeRepo(), nil)).Register(mux)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/watchers", strings.NewReader(`{
 		"name":"Stock",
@@ -42,7 +42,7 @@ func TestHandlerCreateWatcherRejectsForeignOrg(t *testing.T) {
 	t.Parallel()
 
 	mux := http.NewServeMux()
-	NewHandler(NewUsecases(newFakeRepo(), nil, nil)).Register(mux)
+	NewHandler(NewUsecases(newFakeRepo(), nil)).Register(mux)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/watchers", strings.NewReader(`{
 		"org_id":"org-b",
@@ -51,6 +51,30 @@ func TestHandlerCreateWatcherRejectsForeignOrg(t *testing.T) {
 		"enabled":true
 	}`))
 	req.Header.Set("X-Org-ID", "org-a")
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandlerCreateWatcherRequiresWriteScopeWhenAuthenticated(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	NewHandler(NewUsecases(newFakeRepo(), nil)).Register(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/watchers", strings.NewReader(`{
+		"org_id":"org-a",
+		"name":"Stock",
+		"watcher_type":"low_stock",
+		"enabled":true
+	}`))
+	req.Header.Set("X-Org-ID", "org-a")
+	req.Header.Set("X-Auth-Method", "jwt")
+	req.Header.Set("X-Auth-Scopes", scopeCompanionWatchersRead)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)

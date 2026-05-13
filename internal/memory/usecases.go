@@ -17,7 +17,7 @@ import (
 type Repository interface {
 	Upsert(ctx context.Context, e domain.MemoryEntry) (domain.MemoryEntry, error)
 	Get(ctx context.Context, id uuid.UUID) (domain.MemoryEntry, error)
-	GetByScopeKey(ctx context.Context, scopeType domain.ScopeType, scopeID string, kind domain.MemoryKind, key string) (domain.MemoryEntry, error)
+	GetByScopeKey(ctx context.Context, orgID, productSurface string, scopeType domain.ScopeType, scopeID string, kind domain.MemoryKind, key string) (domain.MemoryEntry, error)
 	Find(ctx context.Context, q FindQuery) ([]domain.MemoryEntry, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 	PurgeExpired(ctx context.Context) (int64, error)
@@ -26,22 +26,34 @@ type Repository interface {
 
 // FindQuery filtros de búsqueda de memoria.
 type FindQuery struct {
-	ScopeType domain.ScopeType
-	ScopeID   string
-	Kind      domain.MemoryKind
-	Limit     int
+	OrgID          string
+	UserID         string
+	ProductSurface string
+	ScopeType      domain.ScopeType
+	ScopeID        string
+	Kind           domain.MemoryKind
+	MemoryType     domain.MemoryType
+	Limit          int
 }
 
 // UpsertInput datos para crear o actualizar una entrada de memoria.
 type UpsertInput struct {
-	Kind        domain.MemoryKind
-	ScopeType   domain.ScopeType
-	ScopeID     string
-	Key         string
-	PayloadJSON json.RawMessage
-	ContentText string
-	Version     int // 0 = insert, >0 = update con versión optimista
-	TTLDays     int // 0 = usar default por kind
+	OrgID           string
+	UserID          string
+	ProductSurface  string
+	Kind            domain.MemoryKind
+	MemoryType      domain.MemoryType
+	Classification  domain.MemoryClass
+	ScopeType       domain.ScopeType
+	ScopeID         string
+	Key             string
+	PayloadJSON     json.RawMessage
+	ContentText     string
+	ProvenanceJSON  json.RawMessage
+	Confidence      float64
+	RetentionPolicy string
+	Version         int // 0 = insert, >0 = update con versión optimista
+	TTLDays         int // 0 = usar default por kind
 }
 
 // defaultPerScopeQuota es el tope de entradas vivas por (scope_type, scope_id).
@@ -69,8 +81,14 @@ func (uc *Usecases) WithPerScopeQuota(n int) *Usecases {
 
 // Upsert crea o actualiza una entrada de memoria.
 func (uc *Usecases) Upsert(ctx context.Context, in UpsertInput) (domain.MemoryEntry, error) {
+	if in.OrgID == "" || in.ProductSurface == "" {
+		return domain.MemoryEntry{}, fmt.Errorf("org_id and product_surface are required")
+	}
 	if in.ScopeType == "" || in.ScopeID == "" {
 		return domain.MemoryEntry{}, fmt.Errorf("scope_type and scope_id are required")
+	}
+	if in.ScopeType == domain.ScopeUser && in.UserID == "" {
+		return domain.MemoryEntry{}, fmt.Errorf("user_id is required for user memory")
 	}
 	if in.Kind == "" {
 		return domain.MemoryEntry{}, fmt.Errorf("kind is required")
@@ -93,19 +111,42 @@ func (uc *Usecases) Upsert(ctx context.Context, in UpsertInput) (domain.MemoryEn
 	if len(in.PayloadJSON) == 0 {
 		in.PayloadJSON = json.RawMessage(`{}`)
 	}
-
-	entry := domain.MemoryEntry{
-		Kind:        in.Kind,
-		ScopeType:   in.ScopeType,
-		ScopeID:     in.ScopeID,
-		Key:         in.Key,
-		PayloadJSON: in.PayloadJSON,
-		ContentText: in.ContentText,
-		Version:     in.Version,
-		ExpiresAt:   expiresAt,
+	if len(in.ProvenanceJSON) == 0 {
+		in.ProvenanceJSON = json.RawMessage(`{}`)
+	}
+	if in.Classification == "" {
+		in.Classification = domain.ClassForKind(in.Kind)
+	}
+	if in.MemoryType == "" {
+		in.MemoryType = domain.TypeForKind(in.Kind)
+	}
+	if in.Confidence <= 0 {
+		in.Confidence = 1
+	}
+	if in.RetentionPolicy == "" {
+		in.RetentionPolicy = "default"
 	}
 
-	current, err := uc.repo.GetByScopeKey(ctx, in.ScopeType, in.ScopeID, in.Kind, in.Key)
+	entry := domain.MemoryEntry{
+		OrgID:           in.OrgID,
+		UserID:          in.UserID,
+		ProductSurface:  in.ProductSurface,
+		Kind:            in.Kind,
+		MemoryType:      in.MemoryType,
+		Classification:  in.Classification,
+		ScopeType:       in.ScopeType,
+		ScopeID:         in.ScopeID,
+		Key:             in.Key,
+		PayloadJSON:     in.PayloadJSON,
+		ContentText:     in.ContentText,
+		ProvenanceJSON:  in.ProvenanceJSON,
+		Confidence:      in.Confidence,
+		RetentionPolicy: in.RetentionPolicy,
+		Version:         in.Version,
+		ExpiresAt:       expiresAt,
+	}
+
+	current, err := uc.repo.GetByScopeKey(ctx, in.OrgID, in.ProductSurface, in.ScopeType, in.ScopeID, in.Kind, in.Key)
 	switch {
 	case err == nil:
 		if in.Version > 0 && current.Version != in.Version {
@@ -155,6 +196,9 @@ func (uc *Usecases) Get(ctx context.Context, id uuid.UUID) (domain.MemoryEntry, 
 
 // Find busca entradas de memoria por scope y kind.
 func (uc *Usecases) Find(ctx context.Context, q FindQuery) ([]domain.MemoryEntry, error) {
+	if q.OrgID == "" || q.ProductSurface == "" {
+		return nil, fmt.Errorf("org_id and product_surface are required")
+	}
 	if q.Limit <= 0 {
 		q.Limit = 50
 	}

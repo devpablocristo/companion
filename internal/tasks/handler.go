@@ -12,9 +12,9 @@ import (
 	"github.com/devpablocristo/core/http/go/httpjson"
 	"github.com/google/uuid"
 
-	"github.com/devpablocristo/core/governance/go/governanceclient"
 	tasksdto "github.com/devpablocristo/companion/internal/tasks/handler/dto"
 	domain "github.com/devpablocristo/companion/internal/tasks/usecases/domain"
+	"github.com/devpablocristo/core/governance/go/governanceclient"
 )
 
 const (
@@ -141,10 +141,10 @@ func (h *Handler) getByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := tasksdto.TaskDetailResponse{
-		Task:                 tasksdto.TaskToResponse(detail.Task),
-		Messages:             make([]tasksdto.MessageResponse, 0, len(detail.Messages)),
-		Actions:              make([]tasksdto.ActionResponse, 0, len(detail.Actions)),
-		Artifacts:            make([]tasksdto.ArtifactResponse, 0, len(detail.Artifacts)),
+		Task:                     tasksdto.TaskToResponse(detail.Task),
+		Messages:                 make([]tasksdto.MessageResponse, 0, len(detail.Messages)),
+		Actions:                  make([]tasksdto.ActionResponse, 0, len(detail.Actions)),
+		Artifacts:                make([]tasksdto.ArtifactResponse, 0, len(detail.Artifacts)),
 		LinkedGovernanceRequests: make([]tasksdto.LinkedGovernanceRequestResponse, 0, len(detail.LinkedGovernanceRequests)),
 	}
 	for _, m := range detail.Messages {
@@ -481,6 +481,7 @@ func (h *Handler) chat(w http.ResponseWriter, r *http.Request) {
 		TaskID:         taskID,
 		UserID:         userID,
 		OrgID:          orgID,
+		AuthScopes:     principalScopes(r),
 		Message:        body.Message,
 		Channel:        body.Channel,
 		ProductSurface: body.ProductSurface,
@@ -531,11 +532,11 @@ func writeGovernanceBlocked(w http.ResponseWriter, err error) bool {
 		return false
 	}
 	httpjson.WriteJSON(w, http.StatusPreconditionFailed, map[string]any{
-		"code":              "GOVERNANCE_NOT_APPROVED",
-		"message":           "execution requires the linked governance to be approved",
+		"code":                  "GOVERNANCE_NOT_APPROVED",
+		"message":               "execution requires the linked governance to be approved",
 		"governance_request_id": blocked.GovernanceRequestID,
 		"governance_status":     blocked.GovernanceStatus,
-		"reason":            blocked.Reason,
+		"reason":                blocked.Reason,
 	})
 	return true
 }

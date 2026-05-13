@@ -18,13 +18,28 @@ type identityKey struct{}
 
 // Identity representa el usuario y organización del request actual.
 type Identity struct {
-	UserID string
-	OrgID  string
+	UserID         string
+	OrgID          string
+	ProductSurface string
+	AuthScopes     []string
 }
 
 // WithIdentity inyecta identidad en el context.
-func WithIdentity(ctx context.Context, userID, orgID string) context.Context {
-	return context.WithValue(ctx, identityKey{}, Identity{UserID: userID, OrgID: orgID})
+func WithIdentity(ctx context.Context, userID, orgID string, scopes ...string) context.Context {
+	return WithIdentityForProduct(ctx, userID, orgID, DefaultProductSurface, scopes...)
+}
+
+func WithIdentityForProduct(ctx context.Context, userID, orgID, productSurface string, scopes ...string) context.Context {
+	productSurface = strings.TrimSpace(productSurface)
+	if productSurface == "" {
+		productSurface = DefaultProductSurface
+	}
+	return context.WithValue(ctx, identityKey{}, Identity{
+		UserID:         strings.TrimSpace(userID),
+		OrgID:          strings.TrimSpace(orgID),
+		ProductSurface: productSurface,
+		AuthScopes:     append([]string(nil), scopes...),
+	})
 }
 
 // IdentityFromContext extrae la identidad del context.
@@ -36,7 +51,7 @@ func IdentityFromContext(ctx context.Context) Identity {
 // ContextPorts interfaces que el context assembler necesita.
 type ContextPorts struct {
 	GovernanceClient *governanceclient.Client
-	MemoryFind   func(ctx context.Context, scopeType memdomain.ScopeType, scopeID string, kind memdomain.MemoryKind, limit int) ([]memdomain.MemoryEntry, error)
+	MemoryFind       func(ctx context.Context, orgID, userID, productSurface string, scopeType memdomain.ScopeType, scopeID string, kind memdomain.MemoryKind, limit int) ([]memdomain.MemoryEntry, error)
 }
 
 // AssembledContext contexto ensamblado para el LLM.
@@ -46,41 +61,48 @@ type AssembledContext struct {
 }
 
 // AssembleContext arma el contexto relevante para una conversación.
-func AssembleContext(ctx context.Context, ports ContextPorts, userID, orgID string, messages []taskdomain.TaskMessage) AssembledContext {
+func AssembleContext(ctx context.Context, ports ContextPorts, userID, orgID, productSurface string, authScopes []string, messages []taskdomain.TaskMessage) AssembledContext {
 	var parts []string
+	if strings.TrimSpace(productSurface) == "" {
+		productSurface = DefaultProductSurface
+	}
 
 	// 1. Memoria del usuario (preferencias)
 	if ports.MemoryFind != nil {
-		userMem, err := ports.MemoryFind(ctx, memdomain.ScopeUser, userID, memdomain.MemoryUserPreference, 5)
-		if err == nil && len(userMem) > 0 {
-			var prefs []string
-			for _, m := range userMem {
-				if m.ContentText != "" {
-					prefs = append(prefs, fmt.Sprintf("- %s: %s", m.Key, m.ContentText))
+		if scopeID := tenantUserMemoryScopeID(orgID, userID); scopeID != "" {
+			userMem, err := ports.MemoryFind(ctx, orgID, userID, productSurface, memdomain.ScopeUser, scopeID, memdomain.MemoryUserPreference, 5)
+			if err == nil && len(userMem) > 0 {
+				var prefs []string
+				for _, m := range userMem {
+					if m.ContentText != "" {
+						prefs = append(prefs, fmt.Sprintf("- %s: %s", m.Key, m.ContentText))
+					}
 				}
-			}
-			if len(prefs) > 0 {
-				parts = append(parts, "Preferencias del usuario:\n"+strings.Join(prefs, "\n"))
+				if len(prefs) > 0 {
+					parts = append(parts, "Preferencias del usuario:\n"+strings.Join(prefs, "\n"))
+				}
 			}
 		}
 
 		// Memoria de la org (hechos del negocio)
-		orgMem, err := ports.MemoryFind(ctx, memdomain.ScopeOrg, orgID, memdomain.MemoryPlaybook, 5)
-		if err == nil && len(orgMem) > 0 {
-			var facts []string
-			for _, m := range orgMem {
-				if m.ContentText != "" {
-					facts = append(facts, "- "+m.ContentText)
+		if strings.TrimSpace(orgID) != "" {
+			orgMem, err := ports.MemoryFind(ctx, orgID, userID, productSurface, memdomain.ScopeOrg, orgID, memdomain.MemoryPlaybook, 5)
+			if err == nil && len(orgMem) > 0 {
+				var facts []string
+				for _, m := range orgMem {
+					if m.ContentText != "" {
+						facts = append(facts, "- "+m.ContentText)
+					}
 				}
-			}
-			if len(facts) > 0 {
-				parts = append(parts, "Hechos del negocio:\n"+strings.Join(facts, "\n"))
+				if len(facts) > 0 {
+					parts = append(parts, "Hechos del negocio:\n"+strings.Join(facts, "\n"))
+				}
 			}
 		}
 	}
 
 	// 2. Aprobaciones pendientes
-	if ports.GovernanceClient != nil {
+	if ports.GovernanceClient != nil && strings.TrimSpace(orgID) != "" && hasAnyScope(authScopes, scopeCompanionGovernanceAdmin) {
 		st, raw, err := ports.GovernanceClient.ListPendingApprovals(ctx)
 		if err == nil && st == 200 && len(raw) > 0 {
 			var approvals struct {
@@ -129,4 +151,19 @@ func AssembleContext(ctx context.Context, ports ContextPorts, userID, orgID stri
 		Summary: summary,
 		History: history,
 	}
+}
+
+func hasAnyScope(scopes []string, required ...string) bool {
+	have := make(map[string]struct{}, len(scopes))
+	for _, scope := range scopes {
+		if scope = strings.TrimSpace(scope); scope != "" {
+			have[scope] = struct{}{}
+		}
+	}
+	for _, scope := range required {
+		if _, ok := have[scope]; ok {
+			return true
+		}
+	}
+	return false
 }

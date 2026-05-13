@@ -138,11 +138,45 @@ type stubChecker struct {
 	approved bool
 	err      error
 	calls    int
+	last     GovernanceExecutionIntent
 }
 
-func (s *stubChecker) AuthorizeExecution(ctx context.Context, governanceRequestID uuid.UUID, orgID string) (bool, error) {
+func (s *stubChecker) AuthorizeExecution(ctx context.Context, intent GovernanceExecutionIntent) (bool, error) {
 	s.calls++
+	s.last = intent
 	return s.approved, s.err
+}
+
+func TestGovernanceCheckerAdapter_AllowsExecutedStatus(t *testing.T) {
+	t.Parallel()
+
+	intent := GovernanceExecutionIntent{GovernanceRequestID: uuid.New(), OrgID: "org-a", BindingHash: "hash"}
+	adapter := NewGovernanceCheckerAdapter(func(ctx context.Context, id uuid.UUID) (GovernanceRequestMeta, int, error) {
+		return GovernanceRequestMeta{Status: "executed", OrgID: "org-a", BindingHash: "hash"}, 200, nil
+	})
+	ok, err := adapter.AuthorizeExecution(context.Background(), intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected executed governance status to authorize connector execution")
+	}
+}
+
+func TestGovernanceCheckerAdapter_RejectsBindingMismatch(t *testing.T) {
+	t.Parallel()
+
+	intent := GovernanceExecutionIntent{GovernanceRequestID: uuid.New(), OrgID: "org-a", BindingHash: "expected"}
+	adapter := NewGovernanceCheckerAdapter(func(ctx context.Context, id uuid.UUID) (GovernanceRequestMeta, int, error) {
+		return GovernanceRequestMeta{Status: "approved", OrgID: "org-a", BindingHash: "different"}, 200, nil
+	})
+	ok, err := adapter.AuthorizeExecution(context.Background(), intent)
+	if !errors.Is(err, ErrUngated) {
+		t.Fatalf("expected ErrUngated, got %v", err)
+	}
+	if ok {
+		t.Fatal("expected binding mismatch to deny execution")
+	}
 }
 
 type blockingConnector struct {
@@ -160,9 +194,9 @@ func (b *blockingConnector) Kind() string { return "blocking" }
 func (b *blockingConnector) Capabilities() []domain.Capability {
 	return []domain.Capability{
 		{
-			Operation:      "blocking.write",
-			Mode:           domain.CapabilityModeWrite,
-			SideEffect:     true,
+			Operation:          "blocking.write",
+			Mode:               domain.CapabilityModeWrite,
+			SideEffect:         true,
 			RequiresGovernance: true,
 			InputSchema: map[string]any{
 				"type":     "object",
@@ -193,20 +227,20 @@ func (b *blockingConnector) Execute(ctx context.Context, spec domain.ExecutionSp
 		return domain.ExecutionResult{}, err
 	}
 	return domain.ExecutionResult{
-		ID:              uuid.New(),
-		ConnectorID:     spec.ConnectorID,
-		OrgID:           spec.OrgID,
-		ActorID:         spec.ActorID,
-		Operation:       spec.Operation,
-		Status:          domain.ExecSuccess,
-		ExternalRef:     "blocking-" + uuid.New().String()[:8],
-		Payload:         spec.Payload,
-		ResultJSON:      json.RawMessage(resultJSON),
-		DurationMS:      1,
-		IdempotencyKey:  spec.IdempotencyKey,
-		TaskID:          spec.TaskID,
+		ID:                  uuid.New(),
+		ConnectorID:         spec.ConnectorID,
+		OrgID:               spec.OrgID,
+		ActorID:             spec.ActorID,
+		Operation:           spec.Operation,
+		Status:              domain.ExecSuccess,
+		ExternalRef:         "blocking-" + uuid.New().String()[:8],
+		Payload:             spec.Payload,
+		ResultJSON:          json.RawMessage(resultJSON),
+		DurationMS:          1,
+		IdempotencyKey:      spec.IdempotencyKey,
+		TaskID:              spec.TaskID,
 		GovernanceRequestID: spec.GovernanceRequestID,
-		CreatedAt:       time.Now().UTC(),
+		CreatedAt:           time.Now().UTC(),
 	}, nil
 }
 
@@ -222,6 +256,7 @@ func TestUsecases_Execute_resolvesConnectorByKind(t *testing.T) {
 	connectorID := uuid.New()
 	repo.connectors[connectorID] = domain.Connector{
 		ID:      connectorID,
+		OrgID:   "org-a",
 		Name:    "Mock Connector",
 		Kind:    "mock",
 		Enabled: true,
@@ -232,9 +267,13 @@ func TestUsecases_Execute_resolvesConnectorByKind(t *testing.T) {
 	governanceRequestID := uuid.New()
 
 	result, err := uc.Execute(context.Background(), domain.ExecutionSpec{
-		ConnectorID:     connectorID,
-		Operation:       "mock.write",
-		Payload:         json.RawMessage(`{"message":"hello"}`),
+		ConnectorID:         connectorID,
+		OrgID:               "org-a",
+		ActorID:             "actor-1",
+		AuthScopes:          []string{"companion:connectors:execute"},
+		Operation:           "mock.write",
+		Payload:             json.RawMessage(`{"message":"hello"}`),
+		IdempotencyKey:      "idem-1",
 		GovernanceRequestID: &governanceRequestID,
 	})
 	if err != nil {
@@ -254,6 +293,7 @@ func TestUsecases_Execute_disabledConnector(t *testing.T) {
 	connectorID := uuid.New()
 	repo.connectors[connectorID] = domain.Connector{
 		ID:      connectorID,
+		OrgID:   "org-a",
 		Name:    "Mock Connector",
 		Kind:    "mock",
 		Enabled: false,
@@ -264,6 +304,9 @@ func TestUsecases_Execute_disabledConnector(t *testing.T) {
 
 	_, err := uc.Execute(context.Background(), domain.ExecutionSpec{
 		ConnectorID: connectorID,
+		OrgID:       "org-a",
+		ActorID:     "actor-1",
+		AuthScopes:  []string{"companion:connectors:execute"},
 		Operation:   "mock.echo",
 		Payload:     json.RawMessage(`{}`),
 	})
@@ -369,6 +412,7 @@ func TestUsecases_Execute_readOnlyDoesNotRequireGovernance(t *testing.T) {
 	connectorID := uuid.New()
 	repo.connectors[connectorID] = domain.Connector{
 		ID:      connectorID,
+		OrgID:   "org-a",
 		Name:    "Mock Connector",
 		Kind:    "mock",
 		Enabled: true,
@@ -380,6 +424,9 @@ func TestUsecases_Execute_readOnlyDoesNotRequireGovernance(t *testing.T) {
 
 	_, err := uc.Execute(context.Background(), domain.ExecutionSpec{
 		ConnectorID: connectorID,
+		OrgID:       "org-a",
+		ActorID:     "actor-1",
+		AuthScopes:  []string{"companion:connectors:execute"},
 		Operation:   "mock.echo",
 		Payload:     json.RawMessage(`{"message":"hello"}`),
 	})
@@ -398,6 +445,7 @@ func TestUsecases_Execute_sideEffectWithoutGovernanceDenied(t *testing.T) {
 	connectorID := uuid.New()
 	repo.connectors[connectorID] = domain.Connector{
 		ID:      connectorID,
+		OrgID:   "org-a",
 		Name:    "Mock Connector",
 		Kind:    "mock",
 		Enabled: true,
@@ -407,9 +455,13 @@ func TestUsecases_Execute_sideEffectWithoutGovernanceDenied(t *testing.T) {
 	uc := NewUsecases(repo, reg, &stubChecker{approved: true})
 
 	_, err := uc.Execute(context.Background(), domain.ExecutionSpec{
-		ConnectorID: connectorID,
-		Operation:   "mock.write",
-		Payload:     json.RawMessage(`{"message":"hello"}`),
+		ConnectorID:    connectorID,
+		OrgID:          "org-a",
+		ActorID:        "actor-1",
+		AuthScopes:     []string{"companion:connectors:execute"},
+		Operation:      "mock.write",
+		Payload:        json.RawMessage(`{"message":"hello"}`),
+		IdempotencyKey: "idem-ungated",
 	})
 	if !errors.Is(err, ErrUngated) {
 		t.Fatalf("expected ErrUngated, got %v", err)
@@ -423,6 +475,7 @@ func TestUsecases_Execute_validatesInputSchema(t *testing.T) {
 	connectorID := uuid.New()
 	repo.connectors[connectorID] = domain.Connector{
 		ID:      connectorID,
+		OrgID:   "org-a",
 		Name:    "Mock Connector",
 		Kind:    "mock",
 		Enabled: true,
@@ -433,9 +486,13 @@ func TestUsecases_Execute_validatesInputSchema(t *testing.T) {
 	governanceRequestID := uuid.New()
 
 	_, err := uc.Execute(context.Background(), domain.ExecutionSpec{
-		ConnectorID:     connectorID,
-		Operation:       "mock.write",
-		Payload:         json.RawMessage(`{}`),
+		ConnectorID:         connectorID,
+		OrgID:               "org-a",
+		ActorID:             "actor-1",
+		AuthScopes:          []string{"companion:connectors:execute"},
+		Operation:           "mock.write",
+		Payload:             json.RawMessage(`{}`),
+		IdempotencyKey:      "idem-invalid",
 		GovernanceRequestID: &governanceRequestID,
 	})
 	if !errors.Is(err, ErrInvalidPayload) {
@@ -462,13 +519,13 @@ func TestUsecases_Execute_persistsSanitizedEvidence(t *testing.T) {
 	taskID := uuid.New()
 
 	result, err := uc.Execute(context.Background(), domain.ExecutionSpec{
-		ConnectorID:     connectorID,
-		OrgID:           "org-a",
-		ActorID:         "actor-1",
-		Operation:       "mock.write",
-		Payload:         json.RawMessage(`{"message":"hello","api_key":"secret"}`),
-		IdempotencyKey:  "idem-1",
-		TaskID:          &taskID,
+		ConnectorID:         connectorID,
+		OrgID:               "org-a",
+		ActorID:             "actor-1",
+		Operation:           "mock.write",
+		Payload:             json.RawMessage(`{"message":"hello","api_key":"secret"}`),
+		IdempotencyKey:      "idem-1",
+		TaskID:              &taskID,
 		GovernanceRequestID: &governanceRequestID,
 	})
 	if err != nil {
@@ -496,6 +553,7 @@ func TestUsecases_Execute_reusesIdempotentExecution(t *testing.T) {
 	connectorID := uuid.New()
 	repo.connectors[connectorID] = domain.Connector{
 		ID:      connectorID,
+		OrgID:   "org-a",
 		Name:    "Mock Connector",
 		Kind:    "mock",
 		Enabled: true,
@@ -506,11 +564,14 @@ func TestUsecases_Execute_reusesIdempotentExecution(t *testing.T) {
 	governanceRequestID := uuid.New()
 	taskID := uuid.New()
 	spec := domain.ExecutionSpec{
-		ConnectorID:     connectorID,
-		Operation:       "mock.write",
-		Payload:         json.RawMessage(`{"message":"hello"}`),
-		IdempotencyKey:  "idem-1",
-		TaskID:          &taskID,
+		ConnectorID:         connectorID,
+		OrgID:               "org-a",
+		ActorID:             "actor-1",
+		AuthScopes:          []string{"companion:connectors:execute"},
+		Operation:           "mock.write",
+		Payload:             json.RawMessage(`{"message":"hello"}`),
+		IdempotencyKey:      "idem-1",
+		TaskID:              &taskID,
 		GovernanceRequestID: &governanceRequestID,
 	}
 
@@ -535,6 +596,7 @@ func TestUsecases_Execute_conflictsConcurrentIdempotentExecution(t *testing.T) {
 	connectorID := uuid.New()
 	repo.connectors[connectorID] = domain.Connector{
 		ID:      connectorID,
+		OrgID:   "org-a",
 		Name:    "Blocking Connector",
 		Kind:    "blocking",
 		Enabled: true,
@@ -549,11 +611,14 @@ func TestUsecases_Execute_conflictsConcurrentIdempotentExecution(t *testing.T) {
 	governanceRequestID := uuid.New()
 	taskID := uuid.New()
 	spec := domain.ExecutionSpec{
-		ConnectorID:     connectorID,
-		Operation:       "blocking.write",
-		Payload:         json.RawMessage(`{"message":"hello"}`),
-		IdempotencyKey:  "idem-concurrent",
-		TaskID:          &taskID,
+		ConnectorID:         connectorID,
+		OrgID:               "org-a",
+		ActorID:             "actor-1",
+		AuthScopes:          []string{"companion:connectors:execute"},
+		Operation:           "blocking.write",
+		Payload:             json.RawMessage(`{"message":"hello"}`),
+		IdempotencyKey:      "idem-concurrent",
+		TaskID:              &taskID,
 		GovernanceRequestID: &governanceRequestID,
 	}
 
@@ -611,10 +676,13 @@ func TestUsecases_Execute_rejectsConnectorTenantMismatch(t *testing.T) {
 	governanceRequestID := uuid.New()
 
 	_, err := uc.Execute(context.Background(), domain.ExecutionSpec{
-		ConnectorID:     connectorID,
-		OrgID:           "org-b",
-		Operation:       "mock.write",
-		Payload:         json.RawMessage(`{"message":"hello"}`),
+		ConnectorID:         connectorID,
+		OrgID:               "org-b",
+		ActorID:             "actor-1",
+		AuthScopes:          []string{"companion:connectors:execute"},
+		Operation:           "mock.write",
+		Payload:             json.RawMessage(`{"message":"hello"}`),
+		IdempotencyKey:      "idem-mismatch",
 		GovernanceRequestID: &governanceRequestID,
 	})
 	if !IsForbidden(err) {

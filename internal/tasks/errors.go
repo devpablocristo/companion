@@ -28,7 +28,7 @@ var ErrGovernanceNotApproved = fmt.Errorf("governance not approved: %w", ErrInva
 type GovernanceBlockedError struct {
 	GovernanceRequestID string
 	GovernanceStatus    string
-	Reason          string
+	Reason              string
 }
 
 func (e *GovernanceBlockedError) Error() string {

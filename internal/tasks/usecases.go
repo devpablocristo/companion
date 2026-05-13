@@ -15,9 +15,9 @@ import (
 	"github.com/devpablocristo/core/errors/go/domainerr"
 	"github.com/google/uuid"
 
-	"github.com/devpablocristo/core/governance/go/governanceclient"
 	connectordomain "github.com/devpablocristo/companion/internal/connectors/usecases/domain"
 	domain "github.com/devpablocristo/companion/internal/tasks/usecases/domain"
+	"github.com/devpablocristo/core/governance/go/governanceclient"
 )
 
 // Identidad del servicio Companion ante Governance (documentado en README).
@@ -28,7 +28,7 @@ const (
 	ActionTypePropose          = "companion.propose"
 	TaskActionInvestigate      = "investigate"
 	TaskActionPropose          = "propose"
-	TaskActionSyncGovernance       = "sync_governance"
+	TaskActionSyncGovernance   = "sync_governance"
 	TaskActionSetExecutionPlan = "set_execution_plan"
 	TaskActionExecuteConnector = "execute_connector"
 	TaskActionRetryExecution   = "retry_execution"
@@ -66,6 +66,7 @@ type governanceGateway interface {
 
 type taskExecutor interface {
 	GetConnector(ctx context.Context, id uuid.UUID) (connectordomain.Connector, error)
+	BuildActionBinding(ctx context.Context, spec connectordomain.ExecutionSpec) (map[string]any, string, error)
 	Execute(ctx context.Context, spec connectordomain.ExecutionSpec) (connectordomain.ExecutionResult, error)
 }
 
@@ -82,6 +83,7 @@ type ChatOrchestrator interface {
 type OrchestratorInput struct {
 	UserID         string
 	OrgID          string
+	AuthScopes     []string
 	Message        string
 	Messages       []domain.TaskMessage
 	TaskID         *uuid.UUID // opcional: vincula el trace a una task
@@ -95,11 +97,11 @@ type OrchestratorResult struct {
 
 // Usecases lógica de tareas e integración con Nexus governance.
 type Usecases struct {
-	repo               Repository
-	governance         governanceGateway
-	orchestrator       ChatOrchestrator // nil = sin LLM (solo persiste)
-	executor           taskExecutor
-	taskMemory         taskMemoryWriter
+	repo                   Repository
+	governance             governanceGateway
+	orchestrator           ChatOrchestrator // nil = sin LLM (solo persiste)
+	executor               taskExecutor
+	taskMemory             taskMemoryWriter
 	governanceSyncInterval time.Duration
 	// governanceGateEnforced controla si writes bloqueados por governance
 	// devuelven ErrGovernanceNotApproved (true → handler retorna HTTP 412
@@ -110,8 +112,8 @@ type Usecases struct {
 
 func NewUsecases(repo Repository, governance governanceGateway) *Usecases {
 	return &Usecases{
-		repo:               repo,
-		governance:         governance,
+		repo:                   repo,
+		governance:             governance,
 		governanceSyncInterval: defaultGovernanceSyncInterval,
 	}
 }
@@ -197,19 +199,19 @@ func (u *Usecases) Get(ctx context.Context, id uuid.UUID) (domain.Task, error) {
 }
 
 type LinkedGovernanceRequest struct {
-	ActionID uuid.UUID                    `json:"action_id"`
+	ActionID uuid.UUID                        `json:"action_id"`
 	Request  *governanceclient.RequestSummary `json:"request,omitempty"`
 }
 
 type TaskDetail struct {
-	Task                 domain.Task                 `json:"task"`
-	Messages             []domain.TaskMessage        `json:"messages"`
-	Actions              []domain.TaskAction         `json:"actions"`
-	Artifacts            []domain.TaskArtifact       `json:"artifacts"`
+	Task                     domain.Task                     `json:"task"`
+	Messages                 []domain.TaskMessage            `json:"messages"`
+	Actions                  []domain.TaskAction             `json:"actions"`
+	Artifacts                []domain.TaskArtifact           `json:"artifacts"`
 	LinkedGovernanceRequests []LinkedGovernanceRequest       `json:"linked_governance_requests"`
 	GovernanceSync           *domain.TaskGovernanceSyncState `json:"governance_sync,omitempty"`
-	ExecutionPlan        *domain.TaskExecutionPlan   `json:"execution_plan,omitempty"`
-	ExecutionState       *domain.TaskExecutionState  `json:"execution_state,omitempty"`
+	ExecutionPlan            *domain.TaskExecutionPlan       `json:"execution_plan,omitempty"`
+	ExecutionState           *domain.TaskExecutionState      `json:"execution_state,omitempty"`
 }
 
 func (u *Usecases) GetDetail(ctx context.Context, id uuid.UUID) (TaskDetail, error) {
@@ -306,6 +308,7 @@ type ChatInput struct {
 	TaskID         *uuid.UUID // nil = crear tarea nueva
 	UserID         string
 	OrgID          string
+	AuthScopes     []string
 	Message        string
 	Channel        string // "console", "api", etc.
 	ProductSurface string // opcional: "companion" | "ponti" | "pymes". Afecta routing del agent.
@@ -376,12 +379,13 @@ func (u *Usecases) Chat(ctx context.Context, in ChatInput) (ChatResult, error) {
 		} else {
 			orgID := in.OrgID
 			if orgID == "" {
-				orgID = t.CreatedBy // fallback si no viene en el request
+				orgID = t.OrgID
 			}
 			taskID := t.ID
 			result, runErr := u.orchestrator.Run(ctx, OrchestratorInput{
 				UserID:         in.UserID,
 				OrgID:          orgID,
+				AuthScopes:     in.AuthScopes,
 				Message:        in.Message,
 				Messages:       existingMsgs,
 				TaskID:         &taskID,
@@ -516,7 +520,7 @@ func (u *Usecases) getExecutionState(ctx context.Context, taskID uuid.UUID) (*do
 
 type taskMemorySnapshot struct {
 	Task           domain.Task
-	GovernanceSync     *domain.TaskGovernanceSyncState
+	GovernanceSync *domain.TaskGovernanceSyncState
 	ExecutionPlan  *domain.TaskExecutionPlan
 	ExecutionState *domain.TaskExecutionState
 }
@@ -679,13 +683,13 @@ func buildTaskFactsPayload(snapshot taskMemorySnapshot, reason string) json.RawM
 	}
 	if snapshot.GovernanceSync != nil {
 		payload["governance"] = map[string]any{
-			"governance_request_id":    snapshot.GovernanceSync.GovernanceRequestID.String(),
-			"status":               snapshot.GovernanceSync.LastGovernanceStatus,
-			"http_status":          snapshot.GovernanceSync.LastGovernanceHTTPStatus,
-			"last_checked_at":      snapshot.GovernanceSync.LastCheckedAt.UTC().Format(time.RFC3339),
-			"next_check_at":        snapshot.GovernanceSync.NextCheckAt.UTC().Format(time.RFC3339),
-			"consecutive_failures": snapshot.GovernanceSync.ConsecutiveFailures,
-			"last_error":           snapshot.GovernanceSync.LastError,
+			"governance_request_id": snapshot.GovernanceSync.GovernanceRequestID.String(),
+			"status":                snapshot.GovernanceSync.LastGovernanceStatus,
+			"http_status":           snapshot.GovernanceSync.LastGovernanceHTTPStatus,
+			"last_checked_at":       snapshot.GovernanceSync.LastCheckedAt.UTC().Format(time.RFC3339),
+			"next_check_at":         snapshot.GovernanceSync.NextCheckAt.UTC().Format(time.RFC3339),
+			"consecutive_failures":  snapshot.GovernanceSync.ConsecutiveFailures,
+			"last_error":            snapshot.GovernanceSync.LastError,
 		}
 	}
 	if snapshot.ExecutionPlan != nil {
@@ -725,7 +729,7 @@ func (u *Usecases) syncTaskMemory(ctx context.Context, taskID uuid.UUID, reason 
 	summaryPayload := marshalOrEmpty("task_summary", map[string]any{
 		"projection_reason": reason,
 		"status":            snapshot.Task.Status,
-		"governance_status":     snapshot.Task.GovernanceStatus,
+		"governance_status": snapshot.Task.GovernanceStatus,
 		"next_step":         nextTaskStep(snapshot),
 	})
 	if err := u.taskMemory.UpsertTaskMemory(ctx, taskID, taskMemoryKindSummary, taskMemoryCurrentKey, buildTaskSummary(snapshot), summaryPayload); err != nil {
@@ -739,9 +743,9 @@ func (u *Usecases) syncTaskMemory(ctx context.Context, taskID uuid.UUID, reason 
 func buildGovernanceSyncActionPayload(origin string, prev *domain.TaskGovernanceSyncState, next domain.TaskGovernanceSyncState, beforeStatus, afterStatus, event string) json.RawMessage {
 	type syncSnapshot struct {
 		GovernanceRequestID string `json:"governance_request_id,omitempty"`
-		Status          string `json:"status,omitempty"`
-		HTTPStatus      int    `json:"http_status,omitempty"`
-		Error           string `json:"error,omitempty"`
+		Status              string `json:"status,omitempty"`
+		HTTPStatus          int    `json:"http_status,omitempty"`
+		Error               string `json:"error,omitempty"`
 	}
 	payload := map[string]any{
 		"origin":             origin,
@@ -785,9 +789,9 @@ func (u *Usecases) persistGovernanceSyncAction(ctx context.Context, taskID uuid.
 	payload := buildGovernanceSyncActionPayload(origin, prev, next, beforeStatus, afterStatus, event)
 	governanceRequestIDCopy := governanceRequestID
 	if _, err := u.repo.InsertAction(ctx, domain.TaskAction{
-		TaskID:          taskID,
-		ActionType:      TaskActionSyncGovernance,
-		Payload:         payload,
+		TaskID:              taskID,
+		ActionType:          TaskActionSyncGovernance,
+		Payload:             payload,
 		GovernanceRequestID: &governanceRequestIDCopy,
 	}); err != nil {
 		slog.Warn("companion sync_governance action failed", "task_id", taskID.String(), "governance_request_id", governanceRequestID.String(), "error", err)
@@ -818,10 +822,10 @@ func (u *Usecases) syncTaskWithGovernance(ctx context.Context, t domain.Task, or
 
 	now := time.Now().UTC()
 	nextState := domain.TaskGovernanceSyncState{
-		TaskID:          t.ID,
+		TaskID:              t.ID,
 		GovernanceRequestID: rid,
-		LastCheckedAt:   now,
-		NextCheckAt:     nextGovernanceSyncAt(now, u.governanceSyncIntervalOrDefault(), 0),
+		LastCheckedAt:       now,
+		NextCheckAt:         nextGovernanceSyncAt(now, u.governanceSyncIntervalOrDefault(), 0),
 	}
 	if prevState != nil {
 		nextState.CreatedAt = prevState.CreatedAt
@@ -962,8 +966,37 @@ func (u *Usecases) Propose(ctx context.Context, taskID uuid.UUID, in ProposeInpu
 		return domain.Task{}, zeroA, zeroSub, ErrInvalidTaskState
 	}
 
+	plan, err := u.repo.GetExecutionPlan(ctx, taskID)
+	if err != nil {
+		if domainerr.IsNotFound(err) {
+			return domain.Task{}, zeroA, zeroSub, fmt.Errorf("execution plan is required before propose")
+		}
+		return domain.Task{}, zeroA, zeroSub, err
+	}
+	if u.executor == nil {
+		return domain.Task{}, zeroA, zeroSub, fmt.Errorf("task execution is not configured")
+	}
+	idempotencyKey := plan.IdempotencyKey
+	if idempotencyKey == "" {
+		idempotencyKey = defaultExecutionIdempotencyKey(t.ID, nil)
+	}
+	binding, bindingHash, err := u.executor.BuildActionBinding(ctx, connectordomain.ExecutionSpec{
+		ConnectorID:    plan.ConnectorID,
+		OrgID:          t.OrgID,
+		ActorID:        executionActorID(t),
+		ProductSurface: "companion",
+		Operation:      plan.Operation,
+		Payload:        plan.Payload,
+		IdempotencyKey: idempotencyKey,
+		TaskID:         &t.ID,
+	})
+	if err != nil {
+		return domain.Task{}, zeroA, zeroSub, fmt.Errorf("build action binding: %w", err)
+	}
+
 	payload := map[string]any{
-		"note": in.Note,
+		"note":         in.Note,
+		"binding_hash": bindingHash,
 	}
 	pj := marshalOrEmpty("propose_action_payload", payload)
 	action, err := u.repo.InsertAction(ctx, domain.TaskAction{
@@ -976,16 +1009,21 @@ func (u *Usecases) Propose(ctx context.Context, taskID uuid.UUID, in ProposeInpu
 	}
 
 	nexusMeta := map[string]any{
-		"origin":      "companion",
-		"task_id":     taskID.String(),
-		"proposed_by": CompanionRequesterID,
-		"human_owner": t.CreatedBy,
-		"action_id":   action.ID.String(),
+		"origin":       "companion",
+		"task_id":      taskID.String(),
+		"proposed_by":  CompanionRequesterID,
+		"human_owner":  t.CreatedBy,
+		"action_id":    action.ID.String(),
+		"binding_hash": bindingHash,
 	}
 	if in.SessionID != "" {
 		nexusMeta["session_id"] = in.SessionID
 	}
-	params := map[string]any{"nexus": nexusMeta}
+	params := map[string]any{
+		"org_id":         t.OrgID,
+		"nexus":          nexusMeta,
+		"action_binding": binding,
+	}
 
 	ctxJSON := map[string]any{
 		"task_title": t.Title,
@@ -1005,8 +1043,8 @@ func (u *Usecases) Propose(ctx context.Context, taskID uuid.UUID, in ProposeInpu
 		RequesterID:    CompanionRequesterID,
 		RequesterName:  CompanionRequesterName,
 		ActionType:     ActionTypePropose,
-		TargetSystem:   in.TargetSystem,
-		TargetResource: in.TargetResource,
+		TargetSystem:   stringFromBinding(binding, "target_system", in.TargetSystem),
+		TargetResource: stringFromBinding(binding, "target_resource", in.TargetResource),
 		Params:         params,
 		Reason:         reason,
 		Context:        string(ctxStr),
@@ -1037,24 +1075,20 @@ func (u *Usecases) Propose(ctx context.Context, taskID uuid.UUID, in ProposeInpu
 
 	now := time.Now().UTC()
 	state, err := u.repo.UpsertGovernanceSyncState(ctx, domain.TaskGovernanceSyncState{
-		TaskID:               taskID,
+		TaskID:                   taskID,
 		GovernanceRequestID:      reqUUID,
 		LastGovernanceStatus:     normalizeGovernanceStatus(submitOut.Status),
 		LastGovernanceHTTPStatus: http.StatusCreated,
-		LastCheckedAt:        now,
-		LastError:            "",
-		ConsecutiveFailures:  0,
-		NextCheckAt:          nextGovernanceSyncAt(now, u.governanceSyncIntervalOrDefault(), 0),
+		LastCheckedAt:            now,
+		LastError:                "",
+		ConsecutiveFailures:      0,
+		NextCheckAt:              nextGovernanceSyncAt(now, u.governanceSyncIntervalOrDefault(), 0),
 	})
 	if err != nil {
 		return domain.Task{}, action, zeroSub, err
 	}
 
-	plan, planErr := u.getExecutionPlan(ctx, taskID)
-	if planErr != nil {
-		return domain.Task{}, action, zeroSub, planErr
-	}
-	ev, evErr := eventFromSubmitResponseWithExecutionPlan(submitOut, plan != nil)
+	ev, evErr := eventFromSubmitResponseWithExecutionPlan(submitOut, true)
 	if evErr != nil {
 		slog.Error("companion propose unexpected governance status",
 			"task_id", taskID.String(),
@@ -1298,10 +1332,14 @@ func buildExecutionState(prev *domain.TaskExecutionState, taskID uuid.UUID, resu
 }
 
 func defaultExecutionIdempotencyKey(taskID uuid.UUID, governanceRequestID *uuid.UUID) string {
-	if governanceRequestID != nil && *governanceRequestID != uuid.Nil {
-		return fmt.Sprintf("task-execute-%s-%s", taskID.String(), governanceRequestID.String())
-	}
 	return fmt.Sprintf("task-execute-%s", taskID.String())
+}
+
+func stringFromBinding(binding map[string]any, key, fallback string) string {
+	if value := strings.TrimSpace(fmt.Sprint(binding[key])); value != "" && value != "<nil>" {
+		return value
+	}
+	return fallback
 }
 
 func executionActorID(t domain.Task) string {
@@ -1331,10 +1369,10 @@ func (u *Usecases) refreshGovernanceSnapshot(ctx context.Context, taskID uuid.UU
 
 	now := time.Now().UTC()
 	nextState := domain.TaskGovernanceSyncState{
-		TaskID:          taskID,
+		TaskID:              taskID,
 		GovernanceRequestID: governanceRequestID,
-		LastCheckedAt:   now,
-		NextCheckAt:     nextGovernanceSyncAt(now, u.governanceSyncIntervalOrDefault(), 0),
+		LastCheckedAt:       now,
+		NextCheckAt:         nextGovernanceSyncAt(now, u.governanceSyncIntervalOrDefault(), 0),
 	}
 	if prevState != nil {
 		nextState.CreatedAt = prevState.CreatedAt
@@ -1391,31 +1429,32 @@ func (u *Usecases) runTaskExecution(ctx context.Context, t domain.Task, plan dom
 	}
 
 	result, execErr := u.executor.Execute(ctx, connectordomain.ExecutionSpec{
-		ConnectorID:     plan.ConnectorID,
-		OrgID:           t.OrgID,
-		ActorID:         executionActorID(t),
-		Operation:       plan.Operation,
-		Payload:         plan.Payload,
-		IdempotencyKey:  idempotencyKey,
-		TaskID:          &t.ID,
+		ConnectorID:         plan.ConnectorID,
+		OrgID:               t.OrgID,
+		ActorID:             executionActorID(t),
+		ProductSurface:      "companion",
+		Operation:           plan.Operation,
+		Payload:             plan.Payload,
+		IdempotencyKey:      idempotencyKey,
+		TaskID:              &t.ID,
 		GovernanceRequestID: governanceRequestID,
 	})
 	if execErr != nil {
 		result = connectordomain.ExecutionResult{
-			ID:              uuid.New(),
-			ConnectorID:     plan.ConnectorID,
-			OrgID:           t.OrgID,
-			ActorID:         executionActorID(t),
-			Operation:       plan.Operation,
-			Status:          connectordomain.ExecFailure,
-			Payload:         plan.Payload,
-			ResultJSON:      json.RawMessage(`{}`),
-			ErrorMessage:    execErr.Error(),
-			Retryable:       true,
-			IdempotencyKey:  idempotencyKey,
-			TaskID:          &t.ID,
+			ID:                  uuid.New(),
+			ConnectorID:         plan.ConnectorID,
+			OrgID:               t.OrgID,
+			ActorID:             executionActorID(t),
+			Operation:           plan.Operation,
+			Status:              connectordomain.ExecFailure,
+			Payload:             plan.Payload,
+			ResultJSON:          json.RawMessage(`{}`),
+			ErrorMessage:        execErr.Error(),
+			Retryable:           true,
+			IdempotencyKey:      idempotencyKey,
+			TaskID:              &t.ID,
 			GovernanceRequestID: governanceRequestID,
-			CreatedAt:       time.Now().UTC(),
+			CreatedAt:           time.Now().UTC(),
 		}
 	}
 	if result.CreatedAt.IsZero() {
@@ -1424,11 +1463,11 @@ func (u *Usecases) runTaskExecution(ctx context.Context, t domain.Task, plan dom
 	u.reportExecutionToGovernance(ctx, governanceRequestID, result)
 
 	if _, insertErr := u.repo.InsertAction(ctx, domain.TaskAction{
-		TaskID:          t.ID,
-		ActionType:      TaskActionExecuteConnector,
-		Payload:         buildConnectorExecutionPayload(result),
+		TaskID:              t.ID,
+		ActionType:          TaskActionExecuteConnector,
+		Payload:             buildConnectorExecutionPayload(result),
 		GovernanceRequestID: governanceRequestID,
-		ErrorMessage:    result.ErrorMessage,
+		ErrorMessage:        result.ErrorMessage,
 	}); insertErr != nil {
 		slog.Warn("companion execute connector action failed", "task_id", t.ID.String(), "error", insertErr)
 	}
@@ -1448,9 +1487,9 @@ func (u *Usecases) runTaskExecution(ctx context.Context, t domain.Task, plan dom
 
 	verification := verifyExecutionResult(result)
 	if _, verifyErr := u.repo.InsertAction(ctx, domain.TaskAction{
-		TaskID:          t.ID,
-		ActionType:      TaskActionVerifyExecution,
-		Payload:         buildVerificationPayload(result, verification),
+		TaskID:              t.ID,
+		ActionType:          TaskActionVerifyExecution,
+		Payload:             buildVerificationPayload(result, verification),
 		GovernanceRequestID: governanceRequestID,
 		ErrorMessage: func() string {
 			if verification.Status == domain.VerificationStatusFailed {
@@ -1635,9 +1674,9 @@ func (u *Usecases) RetryTask(ctx context.Context, taskID uuid.UUID) (ExecuteTask
 	})
 	governanceRequestID := snapshot.GovernanceRequestID
 	if _, insertErr := u.repo.InsertAction(ctx, domain.TaskAction{
-		TaskID:          taskID,
-		ActionType:      TaskActionRetryExecution,
-		Payload:         payload,
+		TaskID:              taskID,
+		ActionType:          TaskActionRetryExecution,
+		Payload:             payload,
 		GovernanceRequestID: &governanceRequestID,
 	}); insertErr != nil {
 		slog.Warn("companion retry execution action failed", "task_id", taskID.String(), "error", insertErr)
@@ -1719,7 +1758,7 @@ func (u *Usecases) governanceBlockedError(governanceRequestID, governanceStatus,
 	return &GovernanceBlockedError{
 		GovernanceRequestID: governanceRequestID,
 		GovernanceStatus:    governanceStatus,
-		Reason:          reason,
+		Reason:              reason,
 	}
 }
 
@@ -1732,6 +1771,7 @@ func (u *Usecases) NotifyAlert(ctx context.Context, orgID, message string) error
 	}
 	t, err := u.repo.CreateTask(ctx, domain.Task{
 		Title:     title,
+		OrgID:     orgID,
 		Status:    domain.TaskStatusNew,
 		Priority:  "high",
 		CreatedBy: orgID,

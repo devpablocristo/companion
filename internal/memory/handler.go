@@ -13,7 +13,9 @@ import (
 )
 
 const (
-	defaultListLimit = 50
+	defaultListLimit          = 50
+	scopeCompanionMemoryRead  = "companion:memory:read"
+	scopeCompanionMemoryWrite = "companion:memory:write"
 )
 
 type memoryUsecase interface {
@@ -52,6 +54,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 }
 
 func (h *Handler) upsert(w http.ResponseWriter, r *http.Request) {
+	if !requireScope(w, r, scopeCompanionMemoryWrite) {
+		return
+	}
 	var body dto.UpsertMemoryRequest
 	if err := httpjson.DecodeJSON(r, &body); err != nil {
 		httpjson.WriteFlatError(w, http.StatusBadRequest, "VALIDATION", "invalid json")
@@ -65,16 +70,25 @@ func (h *Handler) upsert(w http.ResponseWriter, r *http.Request) {
 		httpjson.WriteFlatError(w, http.StatusForbidden, "FORBIDDEN", "memory scope is not allowed for this principal")
 		return
 	}
+	orgID, userID, productSurface := h.memoryContext(r, domain.ScopeType(body.ScopeType), body.ScopeID)
 
 	entry, err := h.uc.Upsert(r.Context(), UpsertInput{
-		Kind:        domain.MemoryKind(body.Kind),
-		ScopeType:   domain.ScopeType(body.ScopeType),
-		ScopeID:     body.ScopeID,
-		Key:         body.Key,
-		PayloadJSON: body.PayloadJSON,
-		ContentText: body.ContentText,
-		Version:     body.Version,
-		TTLDays:     body.TTLDays,
+		OrgID:           orgID,
+		UserID:          userID,
+		ProductSurface:  productSurface,
+		Kind:            domain.MemoryKind(body.Kind),
+		MemoryType:      domain.MemoryType(body.MemoryType),
+		Classification:  domain.MemoryClass(body.Classification),
+		ScopeType:       domain.ScopeType(body.ScopeType),
+		ScopeID:         body.ScopeID,
+		Key:             body.Key,
+		PayloadJSON:     body.PayloadJSON,
+		ContentText:     body.ContentText,
+		ProvenanceJSON:  body.ProvenanceJSON,
+		Confidence:      body.Confidence,
+		RetentionPolicy: body.RetentionPolicy,
+		Version:         body.Version,
+		TTLDays:         body.TTLDays,
 	})
 	if err != nil {
 		if IsVersionConflict(err) {
@@ -92,6 +106,9 @@ func (h *Handler) upsert(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
+	if !requireScope(w, r, scopeCompanionMemoryRead) {
+		return
+	}
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		httpjson.WriteFlatError(w, http.StatusBadRequest, "VALIDATION", "invalid id")
@@ -106,7 +123,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 		httpjson.WriteFlatInternalError(w, err, "get memory failed")
 		return
 	}
-	if !h.authorizeMemoryScope(r, entry.ScopeType, entry.ScopeID) {
+	if !h.authorizeMemoryEntry(r, entry) {
 		httpjson.WriteFlatError(w, http.StatusForbidden, "FORBIDDEN", "memory scope is not allowed for this principal")
 		return
 	}
@@ -114,6 +131,9 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) find(w http.ResponseWriter, r *http.Request) {
+	if !requireScope(w, r, scopeCompanionMemoryRead) {
+		return
+	}
 	q := r.URL.Query()
 	scopeType := q.Get("scope_type")
 	scopeID := q.Get("scope_id")
@@ -127,10 +147,14 @@ func (h *Handler) find(w http.ResponseWriter, r *http.Request) {
 	}
 
 	entries, err := h.uc.Find(r.Context(), FindQuery{
-		ScopeType: domain.ScopeType(scopeType),
-		ScopeID:   scopeID,
-		Kind:      domain.MemoryKind(q.Get("kind")),
-		Limit:     defaultListLimit,
+		OrgID:          principalOrgID(r),
+		UserID:         principalUserID(r),
+		ProductSurface: productSurface(r),
+		ScopeType:      domain.ScopeType(scopeType),
+		ScopeID:        scopeID,
+		Kind:           domain.MemoryKind(q.Get("kind")),
+		MemoryType:     domain.MemoryType(q.Get("memory_type")),
+		Limit:          defaultListLimit,
 	})
 	if err != nil {
 		httpjson.WriteFlatInternalError(w, err, "find memory failed")
@@ -145,6 +169,9 @@ func (h *Handler) find(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {
+	if !requireScope(w, r, scopeCompanionMemoryWrite) {
+		return
+	}
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		httpjson.WriteFlatError(w, http.StatusBadRequest, "VALIDATION", "invalid id")
@@ -159,7 +186,7 @@ func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {
 		httpjson.WriteFlatInternalError(w, err, "get memory failed")
 		return
 	}
-	if !h.authorizeMemoryScope(r, entry.ScopeType, entry.ScopeID) {
+	if !h.authorizeMemoryEntry(r, entry) {
 		httpjson.WriteFlatError(w, http.StatusForbidden, "FORBIDDEN", "memory scope is not allowed for this principal")
 		return
 	}
@@ -175,9 +202,9 @@ func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) authorizeMemoryScope(r *http.Request, scopeType domain.ScopeType, scopeID string) bool {
-	orgID := strings.TrimSpace(r.Header.Get("X-Org-ID"))
+	orgID := principalOrgID(r)
 	if orgID == "" {
-		return true
+		return false
 	}
 
 	scopeID = strings.TrimSpace(scopeID)
@@ -185,7 +212,8 @@ func (h *Handler) authorizeMemoryScope(r *http.Request, scopeType domain.ScopeTy
 	case domain.ScopeOrg:
 		return scopeID == orgID
 	case domain.ScopeUser:
-		return scopeID != "" && scopeID == strings.TrimSpace(r.Header.Get("X-User-ID"))
+		userID := principalUserID(r)
+		return userID != "" && scopeID == tenantUserMemoryScopeID(orgID, userID)
 	case domain.ScopeTask:
 		// Antes esto retornaba true: cualquier principal podía leer/escribir
 		// memoria de cualquier task. Ahora resolvemos el org de la task vía
@@ -206,4 +234,79 @@ func (h *Handler) authorizeMemoryScope(r *http.Request, scopeType domain.ScopeTy
 	default:
 		return false
 	}
+}
+
+func (h *Handler) authorizeMemoryEntry(r *http.Request, entry domain.MemoryEntry) bool {
+	if strings.TrimSpace(entry.ProductSurface) != productSurface(r) {
+		return false
+	}
+	return h.authorizeMemoryScope(r, entry.ScopeType, entry.ScopeID)
+}
+
+func (h *Handler) memoryContext(r *http.Request, scopeType domain.ScopeType, scopeID string) (string, string, string) {
+	orgID := principalOrgID(r)
+	userID := principalUserID(r)
+	if scopeType == domain.ScopeTask && h.taskOrgs != nil {
+		if taskID, err := uuid.Parse(strings.TrimSpace(scopeID)); err == nil {
+			if taskOrg, err := h.taskOrgs.GetTaskOrg(r.Context(), taskID); err == nil {
+				orgID = strings.TrimSpace(taskOrg)
+			}
+		}
+	}
+	return orgID, userID, productSurface(r)
+}
+
+func principalOrgID(r *http.Request) string {
+	return strings.TrimSpace(r.Header.Get("X-Org-ID"))
+}
+
+func principalUserID(r *http.Request) string {
+	return strings.TrimSpace(r.Header.Get("X-User-ID"))
+}
+
+func productSurface(r *http.Request) string {
+	value := strings.TrimSpace(r.Header.Get("X-Product-Surface"))
+	if value == "" {
+		return "companion"
+	}
+	return value
+}
+
+func tenantUserMemoryScopeID(orgID, userID string) string {
+	return strings.TrimSpace(orgID) + ":" + strings.TrimSpace(userID)
+}
+
+func requireScope(w http.ResponseWriter, r *http.Request, scopes ...string) bool {
+	if requestHasNoAuthContext(r) || requestHasScope(r, scopes...) {
+		return true
+	}
+	httpjson.WriteFlatError(w, http.StatusForbidden, "FORBIDDEN", "missing required scope")
+	return false
+}
+
+func requestHasNoAuthContext(r *http.Request) bool {
+	return strings.TrimSpace(r.Header.Get("X-Auth-Method")) == "" &&
+		strings.TrimSpace(r.Header.Get("X-Auth-Scopes")) == ""
+}
+
+func requestHasScope(r *http.Request, scopes ...string) bool {
+	have := parseHeaderScopes(r.Header.Get("X-Auth-Scopes"))
+	for _, scope := range scopes {
+		if _, ok := have[scope]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func parseHeaderScopes(raw string) map[string]struct{} {
+	raw = strings.NewReplacer(",", " ", ";", " ", "+", " ").Replace(raw)
+	fields := strings.Fields(raw)
+	out := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		if scope := strings.TrimSpace(field); scope != "" {
+			out[scope] = struct{}{}
+		}
+	}
+	return out
 }

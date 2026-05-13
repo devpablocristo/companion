@@ -33,16 +33,22 @@ func principalActorID(r *http.Request) string {
 
 func canAccessConnectorOrg(r *http.Request, connector domain.Connector) bool {
 	orgID := principalOrgID(r)
-	if requestHasNoAuthContext(r) || orgID == "" || strings.TrimSpace(connector.OrgID) == "" {
+	if requestHasNoAuthContext(r) || strings.TrimSpace(connector.OrgID) == "" {
 		return true
+	}
+	if orgID == "" {
+		return false
 	}
 	return strings.TrimSpace(connector.OrgID) == orgID
 }
 
 func canAccessExecutionOrg(r *http.Request, execution domain.ExecutionResult) bool {
 	orgID := principalOrgID(r)
-	if requestHasNoAuthContext(r) || orgID == "" || strings.TrimSpace(execution.OrgID) == "" {
+	if requestHasNoAuthContext(r) {
 		return true
+	}
+	if orgID == "" || strings.TrimSpace(execution.OrgID) == "" {
+		return false
 	}
 	return strings.TrimSpace(execution.OrgID) == orgID
 }
@@ -52,6 +58,9 @@ func bindPayloadToPrincipalOrg(r *http.Request, raw json.RawMessage) (json.RawMe
 	if orgID == "" {
 		if len(raw) == 0 {
 			return json.RawMessage(`{}`), true
+		}
+		if !requestHasNoAuthContext(r) {
+			return nil, false
 		}
 		return raw, true
 	}

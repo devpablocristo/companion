@@ -10,9 +10,15 @@ import (
 	"github.com/devpablocristo/core/errors/go/domainerr"
 	"github.com/google/uuid"
 
-	"github.com/devpablocristo/core/http/go/httpjson"
 	"github.com/devpablocristo/companion/internal/watchers/handler/dto"
 	domain "github.com/devpablocristo/companion/internal/watchers/usecases/domain"
+	"github.com/devpablocristo/core/http/go/httpjson"
+)
+
+const (
+	scopeCompanionWatchersRead    = "companion:watchers:read"
+	scopeCompanionWatchersWrite   = "companion:watchers:write"
+	scopeCompanionWatchersExecute = "companion:watchers:execute"
 )
 
 // watcherUsecase port que el handler consume.
@@ -48,6 +54,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 }
 
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
+	if !requireScope(w, r, scopeCompanionWatchersWrite) {
+		return
+	}
 	var req dto.CreateWatcherRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httpjson.WriteFlatError(w, http.StatusBadRequest, "invalid_request", "invalid request body")
@@ -75,6 +84,9 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
+	if !requireScope(w, r, scopeCompanionWatchersRead) {
+		return
+	}
 	orgID, ok := effectiveWatcherOrgID(r, r.URL.Query().Get("org_id"))
 	if !ok {
 		httpjson.WriteFlatError(w, http.StatusForbidden, "forbidden", "watcher org is not allowed for this principal")
@@ -99,6 +111,9 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getByID(w http.ResponseWriter, r *http.Request) {
+	if !requireScope(w, r, scopeCompanionWatchersRead) {
+		return
+	}
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		httpjson.WriteFlatError(w, http.StatusBadRequest, "invalid_id", "invalid watcher id")
@@ -123,6 +138,9 @@ func (h *Handler) getByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
+	if !requireScope(w, r, scopeCompanionWatchersWrite) {
+		return
+	}
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		httpjson.WriteFlatError(w, http.StatusBadRequest, "invalid_id", "invalid watcher id")
@@ -170,6 +188,9 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) remove(w http.ResponseWriter, r *http.Request) {
+	if !requireScope(w, r, scopeCompanionWatchersWrite) {
+		return
+	}
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		httpjson.WriteFlatError(w, http.StatusBadRequest, "invalid_id", "invalid watcher id")
@@ -202,6 +223,9 @@ func (h *Handler) remove(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) run(w http.ResponseWriter, r *http.Request) {
+	if !requireScope(w, r, scopeCompanionWatchersExecute) {
+		return
+	}
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		httpjson.WriteFlatError(w, http.StatusBadRequest, "invalid_id", "invalid watcher id")
@@ -243,6 +267,9 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listProposals(w http.ResponseWriter, r *http.Request) {
+	if !requireScope(w, r, scopeCompanionWatchersRead) {
+		return
+	}
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		httpjson.WriteFlatError(w, http.StatusBadRequest, "invalid_id", "invalid watcher id")
@@ -279,6 +306,9 @@ func effectiveWatcherOrgID(r *http.Request, requested string) (string, bool) {
 	effective := strings.TrimSpace(r.Header.Get("X-Org-ID"))
 	requested = strings.TrimSpace(requested)
 	if effective == "" {
+		if !requestHasNoAuthContext(r) {
+			return "", false
+		}
 		return requested, true
 	}
 	if requested == "" || requested == effective {
@@ -289,5 +319,43 @@ func effectiveWatcherOrgID(r *http.Request, requested string) (string, bool) {
 
 func canAccessWatcherOrg(r *http.Request, watcher domain.Watcher) bool {
 	effective := strings.TrimSpace(r.Header.Get("X-Org-ID"))
-	return effective == "" || strings.TrimSpace(watcher.OrgID) == effective
+	if requestHasNoAuthContext(r) {
+		return true
+	}
+	return effective != "" && strings.TrimSpace(watcher.OrgID) != "" && strings.TrimSpace(watcher.OrgID) == effective
+}
+
+func requireScope(w http.ResponseWriter, r *http.Request, scopes ...string) bool {
+	if requestHasNoAuthContext(r) || requestHasScope(r, scopes...) {
+		return true
+	}
+	httpjson.WriteFlatError(w, http.StatusForbidden, "forbidden", "missing required scope")
+	return false
+}
+
+func requestHasNoAuthContext(r *http.Request) bool {
+	return strings.TrimSpace(r.Header.Get("X-Auth-Method")) == "" &&
+		strings.TrimSpace(r.Header.Get("X-Auth-Scopes")) == ""
+}
+
+func requestHasScope(r *http.Request, scopes ...string) bool {
+	have := parseHeaderScopes(r.Header.Get("X-Auth-Scopes"))
+	for _, scope := range scopes {
+		if _, ok := have[scope]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func parseHeaderScopes(raw string) map[string]struct{} {
+	raw = strings.NewReplacer(",", " ", ";", " ", "+", " ").Replace(raw)
+	fields := strings.Fields(raw)
+	out := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		if scope := strings.TrimSpace(field); scope != "" {
+			out[scope] = struct{}{}
+		}
+	}
+	return out
 }

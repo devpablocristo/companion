@@ -29,12 +29,12 @@ func (p *PymesConnector) Kind() string { return "pymes" }
 func (p *PymesConnector) Capabilities() []domain.Capability {
 	return []domain.Capability{
 		{
-			Operation:      "pymes.send_whatsapp_text",
-			Mode:           domain.CapabilityModeWrite,
-			SideEffect:     true,
-			RiskClass:      "medium",
+			Operation:          "pymes.send_whatsapp_text",
+			Mode:               domain.CapabilityModeWrite,
+			SideEffect:         true,
+			RiskClass:          "medium",
 			RequiresGovernance: true,
-			RequiredScopes: []string{"companion:connectors:execute"},
+			RequiredScopes:     []string{"companion:connectors:execute"},
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"org_id", "party_id", "body"},
@@ -42,12 +42,12 @@ func (p *PymesConnector) Capabilities() []domain.Capability {
 			EvidenceFields: []string{"sent", "external_ref", "party_id"},
 		},
 		{
-			Operation:      "pymes.send_whatsapp_template",
-			Mode:           domain.CapabilityModeWrite,
-			SideEffect:     true,
-			RiskClass:      "medium",
+			Operation:          "pymes.send_whatsapp_template",
+			Mode:               domain.CapabilityModeWrite,
+			SideEffect:         true,
+			RiskClass:          "medium",
 			RequiresGovernance: true,
-			RequiredScopes: []string{"companion:connectors:execute"},
+			RequiredScopes:     []string{"companion:connectors:execute"},
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"org_id", "party_id", "template_name"},
@@ -102,6 +102,203 @@ func (p *PymesConnector) Capabilities() []domain.Capability {
 			},
 			EvidenceFields: []string{"items"},
 		},
+		{
+			Operation:      "pymes.get_revenue_comparison",
+			Mode:           domain.CapabilityModeRead,
+			ReadOnly:       true,
+			RiskClass:      "low",
+			RequiredScopes: []string{"companion:connectors:execute"},
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"org_id"},
+			},
+			EvidenceFields: []string{"current_month", "previous_month", "drop_percent"},
+		},
+
+		// -------------------------------------------------------------------
+		// Migración pymes/ai → Companion (Sprint 1: capabilities ampliadas).
+		// Naming dot-separated por convención del MIGRATION_INVENTORY.md.
+		// -------------------------------------------------------------------
+
+		{
+			Operation:      "pymes.customers.search",
+			Mode:           domain.CapabilityModeRead,
+			ReadOnly:       true,
+			RiskClass:      "low",
+			RequiredScopes: []string{"companion:connectors:execute"},
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"org_id"},
+				"properties": map[string]any{
+					"org_id": map[string]any{"type": "string"},
+					"query":  map[string]any{"type": "string"},
+					"limit":  map[string]any{"type": "integer", "minimum": 1, "maximum": 100},
+				},
+			},
+			EvidenceFields: []string{"items", "total", "has_more"},
+		},
+		{
+			Operation:      "pymes.services.search",
+			Mode:           domain.CapabilityModeRead,
+			ReadOnly:       true,
+			RiskClass:      "low",
+			RequiredScopes: []string{"companion:connectors:execute"},
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"org_id"},
+				"properties": map[string]any{
+					"org_id": map[string]any{"type": "string"},
+					"query":  map[string]any{"type": "string"},
+					"limit":  map[string]any{"type": "integer", "minimum": 1, "maximum": 100},
+				},
+			},
+			EvidenceFields: []string{"items", "total", "has_more"},
+		},
+		{
+			Operation:      "pymes.inventory.search",
+			Mode:           domain.CapabilityModeRead,
+			ReadOnly:       true,
+			RiskClass:      "low",
+			RequiredScopes: []string{"companion:connectors:execute"},
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"org_id"},
+				"properties": map[string]any{
+					"org_id": map[string]any{"type": "string"},
+					"query":  map[string]any{"type": "string"},
+					"limit":  map[string]any{"type": "integer", "minimum": 1, "maximum": 100},
+				},
+			},
+			EvidenceFields: []string{"items", "total", "has_more"},
+		},
+		{
+			Operation:      "pymes.cashflow.summary",
+			Mode:           domain.CapabilityModeRead,
+			ReadOnly:       true,
+			RiskClass:      "low",
+			RequiredScopes: []string{"companion:connectors:execute"},
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"org_id"},
+				"properties": map[string]any{
+					"org_id": map[string]any{"type": "string"},
+					"period": map[string]any{
+						"type": "string",
+						"enum": []string{"today", "week", "month", "quarter", "year"},
+					},
+				},
+			},
+			EvidenceFields: []string{"summary"},
+		},
+		{
+			Operation:      "pymes.accounts.summary",
+			Mode:           domain.CapabilityModeRead,
+			ReadOnly:       true,
+			RiskClass:      "low",
+			RequiredScopes: []string{"companion:connectors:execute"},
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"org_id"},
+			},
+			EvidenceFields: []string{"summary"},
+		},
+		{
+			Operation:          "pymes.scheduling.book",
+			Mode:               domain.CapabilityModeWrite,
+			SideEffect:         true,
+			RiskClass:          "medium",
+			RequiresGovernance: true,
+			RequiredScopes:     []string{"companion:connectors:execute"},
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"org_id", "party_id", "service_id", "slot_at"},
+				"properties": map[string]any{
+					"org_id":       map[string]any{"type": "string"},
+					"party_id":     map[string]any{"type": "string"},
+					"service_id":   map[string]any{"type": "string"},
+					"slot_at":      map[string]any{"type": "string", "format": "date-time"},
+					"duration_min": map[string]any{"type": "integer", "minimum": 1},
+					"notes":        map[string]any{"type": "string"},
+				},
+			},
+			EvidenceFields: []string{"booking_id", "scheduled_at", "service_id", "party_id"},
+		},
+		{
+			Operation:          "pymes.quotes.create",
+			Mode:               domain.CapabilityModeWrite,
+			SideEffect:         true,
+			RiskClass:          "medium",
+			RequiresGovernance: true,
+			RequiredScopes:     []string{"companion:connectors:execute"},
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"org_id", "party_id", "items"},
+				"properties": map[string]any{
+					"org_id":   map[string]any{"type": "string"},
+					"party_id": map[string]any{"type": "string"},
+					"items":    map[string]any{"type": "array", "minItems": 1},
+					"notes":    map[string]any{"type": "string"},
+				},
+			},
+			EvidenceFields: []string{"quote_id", "total", "party_id"},
+		},
+		{
+			Operation:          "pymes.sales.create",
+			Mode:               domain.CapabilityModeWrite,
+			SideEffect:         true,
+			RiskClass:          "high",
+			RequiresGovernance: true,
+			RequiredScopes:     []string{"companion:connectors:execute"},
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"org_id", "party_id", "items"},
+				"properties": map[string]any{
+					"org_id":         map[string]any{"type": "string"},
+					"party_id":       map[string]any{"type": "string"},
+					"items":          map[string]any{"type": "array", "minItems": 1},
+					"payment_method": map[string]any{"type": "string"},
+				},
+			},
+			EvidenceFields: []string{"sale_id", "total", "party_id"},
+		},
+		{
+			Operation:          "pymes.payments.link",
+			Mode:               domain.CapabilityModeWrite,
+			SideEffect:         true,
+			RiskClass:          "high",
+			RequiresGovernance: true,
+			RequiredScopes:     []string{"companion:connectors:execute"},
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"org_id", "sale_id", "amount"},
+				"properties": map[string]any{
+					"org_id":  map[string]any{"type": "string"},
+					"sale_id": map[string]any{"type": "string"},
+					"amount":  map[string]any{"type": "number", "exclusiveMinimum": 0},
+					"method":  map[string]any{"type": "string"},
+				},
+			},
+			EvidenceFields: []string{"payment_id", "sale_id", "amount"},
+		},
+		{
+			Operation:          "pymes.procurement_requests.create",
+			Mode:               domain.CapabilityModeWrite,
+			SideEffect:         true,
+			RiskClass:          "medium",
+			RequiresGovernance: true,
+			RequiredScopes:     []string{"companion:connectors:execute"},
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"org_id", "items"},
+				"properties": map[string]any{
+					"org_id":   map[string]any{"type": "string"},
+					"items":    map[string]any{"type": "array", "minItems": 1},
+					"priority": map[string]any{"type": "string"},
+					"notes":    map[string]any{"type": "string"},
+				},
+			},
+			EvidenceFields: []string{"request_id", "items_count"},
+		},
 	}
 }
 
@@ -122,8 +319,12 @@ func (p *PymesConnector) Execute(ctx context.Context, spec domain.ExecutionSpec)
 		TemplateName    string            `json:"template_name"`
 		Params          map[string]string `json:"params"`
 		ThresholdDays   int               `json:"threshold_days"`
+		HoursBefore     int               `json:"hours_before_appointment"`
 		ThresholdUnits  int               `json:"threshold_units"`
 		ThresholdMonths int               `json:"threshold_months"`
+		Query           string            `json:"query"`
+		Limit           int               `json:"limit"`
+		Period          string            `json:"period"`
 	}
 	if err := json.Unmarshal(spec.Payload, &params); err != nil {
 		return domain.ExecutionResult{}, fmt.Errorf("parse payload: %w", err)
@@ -147,7 +348,11 @@ func (p *PymesConnector) Execute(ctx context.Context, spec domain.ExecutionSpec)
 		resultData = items
 
 	case "pymes.get_appointments":
-		items, err := p.client.GetUnconfirmedAppointments(ctx, params.OrgID, 24)
+		hoursBefore := params.HoursBefore
+		if hoursBefore <= 0 {
+			hoursBefore = 24
+		}
+		items, err := p.client.GetUnconfirmedAppointments(ctx, params.OrgID, hoursBefore)
 		execErr = err
 		resultData = items
 
@@ -160,6 +365,61 @@ func (p *PymesConnector) Execute(ctx context.Context, spec domain.ExecutionSpec)
 		items, err := p.client.GetInactiveCustomers(ctx, params.OrgID, params.ThresholdMonths)
 		execErr = err
 		resultData = items
+
+	case "pymes.get_revenue_comparison":
+		comparison, err := p.client.GetRevenueComparison(ctx, params.OrgID)
+		execErr = err
+		resultData = comparison
+
+	case "pymes.customers.search":
+		paged, err := p.client.SearchCustomers(ctx, params.OrgID, params.Query, params.Limit)
+		execErr = err
+		resultData = paged
+
+	case "pymes.services.search":
+		paged, err := p.client.SearchServices(ctx, params.OrgID, params.Query, params.Limit)
+		execErr = err
+		resultData = paged
+
+	case "pymes.inventory.search":
+		paged, err := p.client.SearchInventory(ctx, params.OrgID, params.Query, params.Limit)
+		execErr = err
+		resultData = paged
+
+	case "pymes.cashflow.summary":
+		raw, err := p.client.GetCashflowSummary(ctx, params.OrgID, params.Period)
+		execErr = err
+		resultData = map[string]any{"summary": json.RawMessage(raw)}
+
+	case "pymes.accounts.summary":
+		raw, err := p.client.GetAccountsSummary(ctx, params.OrgID)
+		execErr = err
+		resultData = map[string]any{"summary": json.RawMessage(raw)}
+
+	case "pymes.scheduling.book":
+		raw, err := p.client.BookScheduling(ctx, params.OrgID, spec.Payload)
+		execErr = err
+		resultData = json.RawMessage(raw)
+
+	case "pymes.quotes.create":
+		raw, err := p.client.CreateQuote(ctx, params.OrgID, spec.Payload)
+		execErr = err
+		resultData = json.RawMessage(raw)
+
+	case "pymes.sales.create":
+		raw, err := p.client.CreateSale(ctx, params.OrgID, spec.Payload)
+		execErr = err
+		resultData = json.RawMessage(raw)
+
+	case "pymes.payments.link":
+		raw, err := p.client.LinkPayment(ctx, params.OrgID, spec.Payload)
+		execErr = err
+		resultData = json.RawMessage(raw)
+
+	case "pymes.procurement_requests.create":
+		raw, err := p.client.CreateProcurementRequest(ctx, params.OrgID, spec.Payload)
+		execErr = err
+		resultData = json.RawMessage(raw)
 
 	default:
 		return domain.ExecutionResult{}, fmt.Errorf("unknown operation: %s", spec.Operation)
@@ -183,21 +443,21 @@ func (p *PymesConnector) Execute(ctx context.Context, spec domain.ExecutionSpec)
 	}
 
 	return domain.ExecutionResult{
-		ID:              uuid.New(),
-		ConnectorID:     spec.ConnectorID,
-		OrgID:           spec.OrgID,
-		ActorID:         spec.ActorID,
-		Operation:       spec.Operation,
-		Status:          status,
-		ExternalRef:     fmt.Sprintf("pymes-%s", spec.Operation),
-		Payload:         spec.Payload,
-		ResultJSON:      json.RawMessage(resultJSON),
-		ErrorMessage:    errMsg,
-		Retryable:       execErr != nil,
-		DurationMS:      duration,
-		IdempotencyKey:  spec.IdempotencyKey,
-		TaskID:          spec.TaskID,
+		ID:                  uuid.New(),
+		ConnectorID:         spec.ConnectorID,
+		OrgID:               spec.OrgID,
+		ActorID:             spec.ActorID,
+		Operation:           spec.Operation,
+		Status:              status,
+		ExternalRef:         fmt.Sprintf("pymes-%s", spec.Operation),
+		Payload:             spec.Payload,
+		ResultJSON:          json.RawMessage(resultJSON),
+		ErrorMessage:        errMsg,
+		Retryable:           execErr != nil,
+		DurationMS:          duration,
+		IdempotencyKey:      spec.IdempotencyKey,
+		TaskID:              spec.TaskID,
 		GovernanceRequestID: spec.GovernanceRequestID,
-		CreatedAt:       time.Now().UTC(),
+		CreatedAt:           time.Now().UTC(),
 	}, nil
 }

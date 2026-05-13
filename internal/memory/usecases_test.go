@@ -15,8 +15,8 @@ type fakeRepo struct {
 	entries map[string]domain.MemoryEntry
 }
 
-func memoryKey(scopeType domain.ScopeType, scopeID string, kind domain.MemoryKind, key string) string {
-	return string(scopeType) + "|" + scopeID + "|" + string(kind) + "|" + key
+func memoryKey(orgID, productSurface string, scopeType domain.ScopeType, scopeID string, kind domain.MemoryKind, key string) string {
+	return orgID + "|" + productSurface + "|" + string(scopeType) + "|" + scopeID + "|" + string(kind) + "|" + key
 }
 
 func (f *fakeRepo) Upsert(ctx context.Context, e domain.MemoryEntry) (domain.MemoryEntry, error) {
@@ -24,7 +24,7 @@ func (f *fakeRepo) Upsert(ctx context.Context, e domain.MemoryEntry) (domain.Mem
 		f.entries = make(map[string]domain.MemoryEntry)
 	}
 	now := time.Now().UTC()
-	k := memoryKey(e.ScopeType, e.ScopeID, e.Kind, e.Key)
+	k := memoryKey(e.OrgID, e.ProductSurface, e.ScopeType, e.ScopeID, e.Kind, e.Key)
 	if e.Version == 0 {
 		e.ID = uuid.New()
 		e.Version = 1
@@ -50,11 +50,11 @@ func (f *fakeRepo) Get(ctx context.Context, id uuid.UUID) (domain.MemoryEntry, e
 	return domain.MemoryEntry{}, ErrNotFound
 }
 
-func (f *fakeRepo) GetByScopeKey(ctx context.Context, scopeType domain.ScopeType, scopeID string, kind domain.MemoryKind, key string) (domain.MemoryEntry, error) {
+func (f *fakeRepo) GetByScopeKey(ctx context.Context, orgID, productSurface string, scopeType domain.ScopeType, scopeID string, kind domain.MemoryKind, key string) (domain.MemoryEntry, error) {
 	if f.entries == nil {
 		return domain.MemoryEntry{}, ErrNotFound
 	}
-	entry, ok := f.entries[memoryKey(scopeType, scopeID, kind, key)]
+	entry, ok := f.entries[memoryKey(orgID, productSurface, scopeType, scopeID, kind, key)]
 	if !ok {
 		return domain.MemoryEntry{}, ErrNotFound
 	}
@@ -89,24 +89,28 @@ func TestUsecases_Upsert_updatesExistingEntryByScopeKey(t *testing.T) {
 	uc := NewUsecases(repo)
 
 	created, err := uc.Upsert(context.Background(), UpsertInput{
-		Kind:        domain.MemoryTaskSummary,
-		ScopeType:   domain.ScopeTask,
-		ScopeID:     "task-1",
-		Key:         "current",
-		ContentText: "initial",
-		PayloadJSON: json.RawMessage(`{"status":"new"}`),
+		OrgID:          "org-a",
+		ProductSurface: "companion",
+		Kind:           domain.MemoryTaskSummary,
+		ScopeType:      domain.ScopeTask,
+		ScopeID:        "task-1",
+		Key:            "current",
+		ContentText:    "initial",
+		PayloadJSON:    json.RawMessage(`{"status":"new"}`),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	updated, err := uc.Upsert(context.Background(), UpsertInput{
-		Kind:        domain.MemoryTaskSummary,
-		ScopeType:   domain.ScopeTask,
-		ScopeID:     "task-1",
-		Key:         "current",
-		Version:     created.Version,
-		ContentText: "updated",
-		PayloadJSON: json.RawMessage(`{"status":"done"}`),
+		OrgID:          "org-a",
+		ProductSurface: "companion",
+		Kind:           domain.MemoryTaskSummary,
+		ScopeType:      domain.ScopeTask,
+		ScopeID:        "task-1",
+		Key:            "current",
+		Version:        created.Version,
+		ContentText:    "updated",
+		PayloadJSON:    json.RawMessage(`{"status":"done"}`),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -122,6 +126,29 @@ func TestUsecases_Upsert_updatesExistingEntryByScopeKey(t *testing.T) {
 	}
 }
 
+func TestUsecases_UpsertDefaultsMemoryTypeFromKind(t *testing.T) {
+	t.Parallel()
+	repo := &fakeRepo{}
+	uc := NewUsecases(repo)
+
+	entry, err := uc.Upsert(context.Background(), UpsertInput{
+		OrgID:          "org-a",
+		UserID:         "user-a",
+		ProductSurface: "pymes",
+		Kind:           domain.MemoryEpisodicEvent,
+		ScopeType:      domain.ScopeUser,
+		ScopeID:        "org-a:user-a",
+		Key:            "episode-1",
+		ContentText:    "El usuario pidio una alerta de stock.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.MemoryType != domain.MemoryTypeEpisodic {
+		t.Fatalf("expected episodic memory type, got %q", entry.MemoryType)
+	}
+}
+
 func TestUsecases_Upsert_rejectsInsertOverQuota(t *testing.T) {
 	t.Parallel()
 	repo := &fakeRepo{}
@@ -129,20 +156,24 @@ func TestUsecases_Upsert_rejectsInsertOverQuota(t *testing.T) {
 
 	for _, k := range []string{"k1", "k2"} {
 		if _, err := uc.Upsert(context.Background(), UpsertInput{
-			Kind:      domain.MemoryTaskSummary,
-			ScopeType: domain.ScopeTask,
-			ScopeID:   "task-q",
-			Key:       k,
+			OrgID:          "org-a",
+			ProductSurface: "companion",
+			Kind:           domain.MemoryTaskSummary,
+			ScopeType:      domain.ScopeTask,
+			ScopeID:        "task-q",
+			Key:            k,
 		}); err != nil {
 			t.Fatalf("seed %s failed: %v", k, err)
 		}
 	}
 
 	_, err := uc.Upsert(context.Background(), UpsertInput{
-		Kind:      domain.MemoryTaskSummary,
-		ScopeType: domain.ScopeTask,
-		ScopeID:   "task-q",
-		Key:       "k3",
+		OrgID:          "org-a",
+		ProductSurface: "companion",
+		Kind:           domain.MemoryTaskSummary,
+		ScopeType:      domain.ScopeTask,
+		ScopeID:        "task-q",
+		Key:            "k3",
 	})
 	if !IsQuotaExceeded(err) {
 		t.Fatalf("expected ErrQuotaExceeded, got %v", err)
@@ -150,11 +181,13 @@ func TestUsecases_Upsert_rejectsInsertOverQuota(t *testing.T) {
 
 	// Update sobre key existente debe seguir funcionando aunque esté en límite.
 	if _, err := uc.Upsert(context.Background(), UpsertInput{
-		Kind:        domain.MemoryTaskSummary,
-		ScopeType:   domain.ScopeTask,
-		ScopeID:     "task-q",
-		Key:         "k1",
-		ContentText: "updated",
+		OrgID:          "org-a",
+		ProductSurface: "companion",
+		Kind:           domain.MemoryTaskSummary,
+		ScopeType:      domain.ScopeTask,
+		ScopeID:        "task-q",
+		Key:            "k1",
+		ContentText:    "updated",
 	}); err != nil {
 		t.Fatalf("update at quota should succeed, got: %v", err)
 	}
