@@ -63,6 +63,21 @@ func DefaultRegistry() Registry {
 			Enabled:        true,
 			Version:        "v1",
 		},
+		// Perfil default para conversaciones en superficie Pymes. El wildcard
+		// "pymes_*" matchea las connector capabilities auto-registradas como
+		// runtime tools (pymes_customers_search, pymes_quotes_create, etc.).
+		// NOTA dev: con LLMs locales pequeños (qwen2.5:3b on CPU) el prompt
+		// con ~17 tools de pymes puede demorar minutos. Para esos entornos
+		// reemplazar "pymes_*" por una lista corta de reads (ver TOOLS.md).
+		{
+			ID:             "pymes.default",
+			ProductSurface: "pymes",
+			MaxAutonomy:    "A2",
+			AllowedTools:   []string{"remember", "recall", "pymes_*"},
+			MemoryPolicy:   MemoryPolicy{AllowedTypes: []string{"preference", "playbook", "task_projection", "operational"}, MaxItems: 10},
+			Enabled:        true,
+			Version:        "v1",
+		},
 	}}
 }
 
@@ -76,8 +91,15 @@ func (r Registry) Resolve(productSurface, intent, requestedAutonomy string, scop
 	case intent == "memory":
 		selected = r.find("companion.memory", selected)
 	}
-	if strings.TrimSpace(productSurface) != "" {
-		selected.ProductSurface = strings.TrimSpace(productSurface)
+	// Si hay un perfil específico para el producto, prevalece sobre el default
+	// (ej: "pymes.default" para superficie Pymes). El intent-based override de
+	// arriba sigue ganando porque governance/operations/memory son transversales.
+	ps := strings.TrimSpace(productSurface)
+	if ps != "" && ps != "companion" && !strings.HasPrefix(intent, "governance.") && !strings.HasPrefix(intent, "operations.") && intent != "memory" {
+		selected = r.find(ps+".default", selected)
+	}
+	if ps != "" {
+		selected.ProductSurface = ps
 	}
 	if requestedAutonomy != "" && autonomyRank(requestedAutonomy) < autonomyRank(selected.MaxAutonomy) {
 		selected.MaxAutonomy = requestedAutonomy
@@ -106,9 +128,32 @@ func intersect(allowed, available []string) []string {
 		}
 	}
 	out := make([]string, 0, len(allowed))
+	seen := make(map[string]struct{}, len(allowed))
 	for _, name := range allowed {
-		if _, ok := set[strings.TrimSpace(name)]; ok {
-			out = append(out, strings.TrimSpace(name))
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		// Soporte de prefix-wildcard: "pymes_*" matchea cualquier tool cuyo
+		// nombre empiece con "pymes_". Hace que el perfil sobreviva cuando se
+		// agregan nuevas capabilities sin modificar el registry.
+		if strings.HasSuffix(name, "*") {
+			prefix := strings.TrimSuffix(name, "*")
+			for avail := range set {
+				if strings.HasPrefix(avail, prefix) {
+					if _, dup := seen[avail]; !dup {
+						out = append(out, avail)
+						seen[avail] = struct{}{}
+					}
+				}
+			}
+			continue
+		}
+		if _, ok := set[name]; ok {
+			if _, dup := seen[name]; !dup {
+				out = append(out, name)
+				seen[name] = struct{}{}
+			}
 		}
 	}
 	return out

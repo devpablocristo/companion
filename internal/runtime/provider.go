@@ -3,6 +3,9 @@
 package runtime
 
 import (
+	"strings"
+	"time"
+
 	coreai "github.com/devpablocristo/core/ai/go"
 )
 
@@ -16,5 +19,19 @@ type (
 	ToolSchema   = coreai.Tool
 )
 
-// NewProvider crea el LLM provider usando la factory de core.
-var NewProvider = coreai.NewProvider
+// NewProvider crea el LLM provider usando la factory de core. Para Ollama se
+// fuerza un timeout más generoso (600s) porque modelos locales chicos pueden
+// tomar minutos al evaluar prompts grandes (sistema + memoria + ~25 tools).
+// El default upstream es 120s, suficiente para anthropic/gemini pero no para
+// ollama-on-CPU.
+func NewProvider(provider, apiKey, model string) LLMProvider {
+	if strings.EqualFold(strings.TrimSpace(provider), "ollama") {
+		baseURL := strings.TrimSpace(apiKey)
+		opts := []coreai.OllamaOption{coreai.WithOllamaTimeout(10 * time.Minute)}
+		if model != "" {
+			opts = append(opts, coreai.WithOllamaModel(model))
+		}
+		return coreai.NewOllama(baseURL, opts...)
+	}
+	return coreai.NewProvider(provider, apiKey, model)
+}
