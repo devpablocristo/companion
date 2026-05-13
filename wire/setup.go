@@ -183,6 +183,19 @@ func NewServer(cfg Config) (http.Handler, func(), error) {
 	// Runtime del compañero (LLM + tools + context)
 	llmProvider := runtime.NewProvider(cfg.LLMProvider, cfg.LLMAPIKey, cfg.LLMModel)
 	toolkit := runtime.NewToolKit(rc, memUC, watcherUC)
+
+	// Bridge LLM ↔ connectors: expone cada capability declarada por los
+	// connector types registrados como runtime tool (LLM-callable). Reads van
+	// directo al executor; writes governed pasan por Nexus antes de ejecutar.
+	connectorViews := make([]runtime.ConnectorTypeView, 0)
+	for _, c := range connReg.List() {
+		connectorViews = append(connectorViews, c)
+	}
+	runtime.RegisterConnectorCapabilities(toolkit, runtime.CapabilityBridgeDeps{
+		Connectors: connectorViews,
+		Executor:   connUC,
+		Submitter:  governanceGateway,
+	})
 	contextPorts := runtime.ContextPorts{
 		GovernanceClient: rc,
 		MemoryFind: func(c context.Context, orgID, userID, productSurface string, st memdomain.ScopeType, sid string, k memdomain.MemoryKind, limit int) ([]memdomain.MemoryEntry, error) {
