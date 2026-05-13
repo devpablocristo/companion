@@ -190,21 +190,23 @@ func TestPymesAccountsSummary(t *testing.T) {
 
 func TestPymesSchedulingBook(t *testing.T) {
 	m := newPymesMock(t)
-	m.respondJSON["/v1/scheduling/book"] = `{"booking_id":"b1","scheduled_at":"2026-06-01T10:00:00Z"}`
+	m.respondJSON["/v1/scheduling/bookings"] = `{"id":"b1","start_at":"2026-06-01T10:00:00Z","end_at":"2026-06-01T10:30:00Z","service_id":"s1","branch_id":"br1"}`
 	conn := newPymesConnectorTest(m)
 
 	res, err := conn.Execute(context.Background(), execSpec("pymes.scheduling.book", map[string]any{
-		"org_id":     "tenant-A",
-		"party_id":   "p1",
-		"service_id": "s1",
-		"slot_at":    "2026-06-01T10:00:00Z",
+		"org_id":         "tenant-A",
+		"branch_id":      "br1",
+		"service_id":     "s1",
+		"start_at":       "2026-06-01T10:00:00Z",
+		"customer_name":  "Pérez",
+		"customer_phone": "+54911",
 	}))
 	if err != nil || res.Status != domain.ExecSuccess {
 		t.Fatalf("unexpected: err=%v status=%s msg=%s", err, res.Status, res.ErrorMessage)
 	}
 	c := m.calls[0]
-	if c.Method != "POST" || c.Path != "/v1/scheduling/book" {
-		t.Errorf("expected POST /v1/scheduling/book, got %s %s", c.Method, c.Path)
+	if c.Method != "POST" || c.Path != "/v1/scheduling/bookings" {
+		t.Errorf("expected POST /v1/scheduling/bookings, got %s %s", c.Method, c.Path)
 	}
 	if !strings.Contains(c.Body, `"service_id":"s1"`) {
 		t.Errorf("body not passed through: %s", c.Body)
