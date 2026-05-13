@@ -295,10 +295,12 @@ func (c *Client) GetAccountsSummary(ctx context.Context, orgID string) (json.Raw
 }
 
 // BookScheduling reserva un turno/cita.
-// Endpoint: POST /v1/scheduling/book
-// Requiere handler en pymes-core (Sprint 2).
+// Endpoint: POST /v1/scheduling/bookings (provisto por modules/scheduling/go,
+// registrado en pymes-core bajo auth + RBAC scheduling:create).
+// El body debe coincidir con CreateBookingRequest del módulo: branch_id,
+// service_id, start_at (RFC3339), customer_name, customer_phone son requeridos.
 func (c *Client) BookScheduling(ctx context.Context, orgID string, body json.RawMessage) (json.RawMessage, error) {
-	return c.doPostRaw(ctx, "/v1/scheduling/book", orgID, body)
+	return c.doPostRaw(ctx, "/v1/scheduling/bookings", orgID, body)
 }
 
 // CreateQuote crea un quote (presupuesto).
