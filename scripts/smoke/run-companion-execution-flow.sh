@@ -30,17 +30,9 @@ CREATE_BODY=$(companion_post "/v1/tasks" "{\"title\":\"smoke-companion-exec-$(da
 TASK_ID=$(echo "$CREATE_BODY" | json_get 'id')
 [ -n "$TASK_ID" ] && pass "Task created: $TASK_ID" || fail "No task id in response"
 
-echo "Loading mock connector..."
-CONNECTORS=$(companion_get "/v1/connectors")
-CONNECTOR_ID=$(echo "$CONNECTORS" | python3 -c "
-import json, sys
-data = json.load(sys.stdin).get('connectors') or []
-conn = next((item for item in data if item.get('kind') == 'mock'), None)
-if not conn:
-    raise SystemExit(1)
-print(conn['id'])
-")
-[ -n "$CONNECTOR_ID" ] && pass "Mock connector found: $CONNECTOR_ID" || fail "Mock connector not found"
+echo "Ensuring mock connector is registered and enabled..."
+CONNECTOR_ID=$(ensure_mock_connector)
+[ -n "$CONNECTOR_ID" ] && pass "Mock connector ready: $CONNECTOR_ID" || fail "Could not ensure mock connector"
 
 echo "Saving execution plan..."
 PLAN=$(companion_put "/v1/tasks/$TASK_ID/execution-plan" "{\"connector_id\":\"$CONNECTOR_ID\",\"operation\":\"mock.echo\",\"payload\":{\"message\":\"smoke execution\"}}")

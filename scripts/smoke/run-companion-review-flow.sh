@@ -19,6 +19,13 @@ CREATE_BODY=$(companion_post "/v1/tasks" "{\"title\":\"smoke-companion-$(date +%
 TASK_ID=$(echo "$CREATE_BODY" | json_get 'id')
 [ -n "$TASK_ID" ] && pass "Task created: $TASK_ID" || fail "No task id in response"
 
+echo "Ensuring mock connector + execution plan (propose requires a plan)..."
+CONNECTOR_ID=$(ensure_mock_connector)
+[ -n "$CONNECTOR_ID" ] && pass "Mock connector ready: $CONNECTOR_ID" || fail "Could not ensure mock connector"
+PLAN=$(companion_put "/v1/tasks/$TASK_ID/execution-plan" "{\"connector_id\":\"$CONNECTOR_ID\",\"operation\":\"mock.echo\",\"payload\":{\"message\":\"smoke review\"}}")
+PLAN_OPERATION=$(echo "$PLAN" | json_get 'operation')
+[ "$PLAN_OPERATION" = "mock.echo" ] && pass "Execution plan saved" || fail "Expected operation mock.echo, got $PLAN_OPERATION"
+
 echo "Proposing to Governance..."
 PROP=$(companion_post "/v1/tasks/$TASK_ID/propose" '{"note":"smoke propose"}')
 REQ_ID=$(echo "$PROP" | json_get 'governance_submit.request_id')
@@ -63,7 +70,9 @@ case "$RS" in
     EXPECTED_ST="waiting_for_approval"
     ;;
   allowed|approved|executed)
-    EXPECTED_ST="done"
+    # Con execution plan vigente, una aprobación deja la task lista para
+    # ejecutar (waiting_for_input), no done. Done lo cierra el ejecutor.
+    EXPECTED_ST="waiting_for_input"
     ;;
   denied|rejected)
     EXPECTED_ST="failed"
