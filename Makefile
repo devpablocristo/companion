@@ -36,3 +36,5 @@ logs:
 smoke:
 	bash scripts/smoke/run-companion-review-flow.sh
 	bash scripts/smoke/run-companion-execution-flow.sh
+	bash scripts/smoke/run-companion-denied-flow.sh
+	bash scripts/smoke/run-companion-governance-assist-flow.sh
