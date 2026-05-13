@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Funciones compartidas para scripts de Nexus v3
+# Funciones compartidas para scripts smoke de Companion + Nexus Governance
 
 set -euo pipefail
 

@@ -32,10 +32,12 @@ type requestRow struct {
 	ActionType string `json:"action_type"`
 	Decision   string `json:"decision"`
 	Status     string `json:"status"`
+	OrgID      string `json:"org_id"`
 }
 
 // proposalCandidate es el body que POSTeamos a /v1/learning/proposals.
 type proposalCandidate struct {
+	OrgID               string  `json:"org_id,omitempty"`
 	ProposedName        string  `json:"proposed_name"`
 	ProposedDescription string  `json:"proposed_description"`
 	ProposedExpression  string  `json:"proposed_expression"`
@@ -81,13 +83,13 @@ func NewProposer(governance *governanceclient.Client, llm coreai.Provider) *Prop
 // AnalyzeAndPropose lee histórico de Nexus, detecta patrones, genera propuestas
 // (asistido por LLM cuando está configurado) y las POSTea de vuelta a Nexus.
 // Devuelve cuántos patrones se detectaron y cuántas propuestas se aceptaron.
-func (p *Proposer) AnalyzeAndPropose(ctx context.Context) (analyzed, submitted int, errs []string, err error) {
-	patterns, err := p.detectPatterns(ctx, defaultMinSampleSize, defaultMinApprovalRat)
+func (p *Proposer) AnalyzeAndPropose(ctx context.Context, orgID string) (analyzed, submitted int, errs []string, err error) {
+	patterns, err := p.detectPatterns(ctx, orgID, defaultMinSampleSize, defaultMinApprovalRat)
 	if err != nil {
 		return 0, 0, nil, fmt.Errorf("detect patterns: %w", err)
 	}
 	for _, pat := range patterns {
-		candidate := p.buildCandidate(ctx, pat)
+		candidate := p.buildCandidate(ctx, orgID, pat)
 		if err := p.submitToNexus(ctx, candidate); err != nil {
 			errs = append(errs, fmt.Sprintf("submit %s: %v", pat.ActionType, err))
 			continue
@@ -97,8 +99,8 @@ func (p *Proposer) AnalyzeAndPropose(ctx context.Context) (analyzed, submitted i
 	return len(patterns), submitted, errs, nil
 }
 
-func (p *Proposer) detectPatterns(ctx context.Context, minSampleSize int, minApprovalRate float64) ([]pattern, error) {
-	st, raw, err := p.governance.ListRequests(ctx, fmt.Sprintf("limit=%d&include_all_orgs=true", defaultListLimit))
+func (p *Proposer) detectPatterns(ctx context.Context, orgID string, minSampleSize int, minApprovalRate float64) ([]pattern, error) {
+	st, raw, err := p.governance.ListRequests(ctx, fmt.Sprintf("limit=%d", defaultListLimit))
 	if err != nil {
 		return nil, fmt.Errorf("list requests: %w", err)
 	}
@@ -115,6 +117,9 @@ func (p *Proposer) detectPatterns(ctx context.Context, minSampleSize int, minApp
 	type stats struct{ total, approved int }
 	byAction := make(map[string]*stats)
 	for _, r := range envelope.Data {
+		if orgID != "" && r.OrgID != orgID {
+			continue
+		}
 		if r.Decision != "require_approval" {
 			continue
 		}
@@ -148,7 +153,7 @@ func (p *Proposer) detectPatterns(ctx context.Context, minSampleSize int, minApp
 	return out, nil
 }
 
-func (p *Proposer) buildCandidate(ctx context.Context, pat pattern) proposalCandidate {
+func (p *Proposer) buildCandidate(ctx context.Context, orgID string, pat pattern) proposalCandidate {
 	gen := p.askLLM(ctx, pat)
 	if gen.Expression == "" {
 		gen.Expression = fmt.Sprintf("request.action_type == '%s'", pat.ActionType)
@@ -176,6 +181,7 @@ func (p *Proposer) buildCandidate(ctx context.Context, pat pattern) proposalCand
 	}
 	actionType := pat.ActionType
 	return proposalCandidate{
+		OrgID:               orgID,
 		ProposedName:        gen.Name,
 		ProposedDescription: gen.Description,
 		ProposedExpression:  gen.Expression,

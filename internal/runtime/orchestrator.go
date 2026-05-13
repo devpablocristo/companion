@@ -15,11 +15,12 @@ const maxToolRounds = 5
 
 // Orchestrator coordina LLM + tools + context para producir la respuesta del compañero.
 type Orchestrator struct {
-	provider         LLMProvider
-	toolkit          *ToolKit
-	ports            ContextPorts
-	traces           TraceRepository // opcional; nil = no persiste (uso en tests)
-	defaultAutonomy  AutonomyLevel   // "" → A2 (default conservador)
+	provider        LLMProvider
+	toolkit         *ToolKit
+	ports           ContextPorts
+	traces          TraceRepository // opcional; nil = no persiste (uso en tests)
+	defaultAutonomy AutonomyLevel   // "" → A2 (default conservador)
+	model           string
 }
 
 // NewOrchestrator crea el orquestador del runtime.
@@ -42,10 +43,16 @@ func (o *Orchestrator) SetDefaultAutonomy(level AutonomyLevel) {
 	o.defaultAutonomy = level
 }
 
+// SetModel fija el nombre del modelo configurado para trazabilidad.
+func (o *Orchestrator) SetModel(model string) {
+	o.model = model
+}
+
 // RunInput entrada para ejecutar el orquestador.
 type RunInput struct {
 	UserID         string
 	OrgID          string
+	AuthScopes     []string
 	ProductSurface string
 	Message        string
 	Messages       []taskdomain.TaskMessage // hilo completo hasta ahora
@@ -64,13 +71,20 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput) (RunResult, error) 
 	if productSurface == "" {
 		productSurface = DefaultProductSurface
 	}
-	route := RouteAgent(in.Message, productSurface, o.toolkit, o.defaultAutonomy)
+	identity := BuildIdentityChain(in.UserID, in.OrgID, productSurface, in.AuthScopes...)
+	route := RouteAgent(in.Message, productSurface, o.toolkit, identity, o.defaultAutonomy)
+	var allowedSchemas []ToolSchema
+	if o.toolkit != nil {
+		allowedSchemas = o.toolkit.SchemasFor(identity, route.Intent)
+	}
 	trace := RunTrace{
 		RunID:          uuid.NewString(),
-		IdentityChain:  BuildIdentityChain(in.UserID, in.OrgID, productSurface),
+		IdentityChain:  identity,
 		Intent:         route.Intent,
 		ProductSurface: route.Product,
 		AutonomyLevel:  route.Autonomy,
+		PromptVersion:  SystemPromptVersion,
+		Model:          o.model,
 		StartedAt:      time.Now().UTC(),
 	}
 	if event := CheckPromptInjection(in.Message); event != nil {
@@ -85,7 +99,7 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput) (RunResult, error) 
 	}
 
 	// 1. Ensamblar contexto
-	assembled := AssembleContext(ctx, o.ports, in.UserID, in.OrgID, in.Messages)
+	assembled := AssembleContext(ctx, o.ports, in.UserID, in.OrgID, productSurface, in.AuthScopes, in.Messages)
 
 	// 2. Construir mensajes para el LLM
 	systemPrompt := SystemPrompt()
@@ -103,7 +117,7 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput) (RunResult, error) 
 		resp, err := o.provider.Chat(ctx, ChatRequest{
 			SystemPrompt: systemPrompt,
 			Messages:     llmMessages,
-			Tools:        o.toolkit.Schemas,
+			Tools:        allowedSchemas,
 			MaxTokens:    1024,
 		})
 		if err != nil {
@@ -143,7 +157,7 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput) (RunResult, error) 
 		for _, tc := range resp.ToolCalls {
 			slog.Info("tool_call", "tool", tc.Name, "round", round)
 			toolStart := time.Now()
-			if event := ValidateToolPolicy(tc.Name, tc.Args, trace.AutonomyLevel); event != nil {
+			if event := ValidateToolPolicy(tc.Name, tc.Args, trace.IdentityChain, route, o.toolkit); event != nil {
 				slog.Warn("tool_call_guardrail_rejected", "tool", tc.Name, "type", event.Type, "reason", event.Reason)
 				trace.GuardrailEvents = append(trace.GuardrailEvents, *event)
 				trace.ToolCalls = append(trace.ToolCalls, ToolTrace{
@@ -162,7 +176,7 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput) (RunResult, error) 
 			}
 
 			// Inyectar identidad en context para que remember/recall usen IDs reales
-			toolCtx, cancel := context.WithTimeout(WithIdentity(ctx, in.UserID, in.OrgID), 15*time.Second)
+			toolCtx, cancel := context.WithTimeout(WithIdentityForProduct(ctx, in.UserID, in.OrgID, productSurface, in.AuthScopes...), 15*time.Second)
 			result := o.toolkit.ExecuteTool(toolCtx, tc.Name, tc.Args)
 			cancel()
 			trace.ToolCalls = append(trace.ToolCalls, ToolTrace{
@@ -206,7 +220,11 @@ func (o *Orchestrator) persistTrace(ctx context.Context, trace RunTrace, in RunI
 // fallback genera una respuesta determinista sin LLM.
 // Sin LLM, Companion pierde riqueza pero no desaparece.
 func (o *Orchestrator) fallback(ctx context.Context, in RunInput) (RunResult, error) {
-	assembled := AssembleContext(ctx, o.ports, in.UserID, in.OrgID, in.Messages)
+	productSurface := in.ProductSurface
+	if productSurface == "" {
+		productSurface = DefaultProductSurface
+	}
+	assembled := AssembleContext(ctx, o.ports, in.UserID, in.OrgID, productSurface, in.AuthScopes, in.Messages)
 
 	reply := "Estoy con capacidad limitada en este momento."
 	if assembled.Summary != "" {
@@ -224,4 +242,3 @@ func FallbackReply(overview string) string {
 	}
 	return fmt.Sprintf("Estado actual:\n%s\n\n¿Qué necesitás?", overview)
 }
-

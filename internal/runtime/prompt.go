@@ -1,5 +1,7 @@
 package runtime
 
+const SystemPromptVersion = "companion.system.v1"
+
 // SystemPrompt genera la constitución de Companion.
 // Constitución blanda: voz, tono, estilo.
 // Las reglas duras (no ejecutar sin approval, no inventar datos) se validan en código,

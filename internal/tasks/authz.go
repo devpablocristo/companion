@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/devpablocristo/core/http/go/httpjson"
 	domain "github.com/devpablocristo/companion/internal/tasks/usecases/domain"
+	"github.com/devpablocristo/core/http/go/httpjson"
 )
 
 const (
@@ -28,10 +28,25 @@ func principalOrgID(r *http.Request) string {
 
 func canAccessTaskOrg(r *http.Request, task domain.Task) bool {
 	orgID := principalOrgID(r)
-	if requestHasNoAuthContext(r) || orgID == "" || strings.TrimSpace(task.OrgID) == "" {
+	if requestHasNoAuthContext(r) {
 		return true
 	}
+	if orgID == "" || strings.TrimSpace(task.OrgID) == "" {
+		return false
+	}
 	return strings.TrimSpace(task.OrgID) == orgID
+}
+
+func principalScopes(r *http.Request) []string {
+	raw := strings.NewReplacer(",", " ", ";", " ", "+", " ").Replace(r.Header.Get("X-Auth-Scopes"))
+	fields := strings.Fields(raw)
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if scope := strings.TrimSpace(field); scope != "" {
+			out = append(out, scope)
+		}
+	}
+	return out
 }
 
 func requestHasNoAuthContext(r *http.Request) bool {

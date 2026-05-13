@@ -8,28 +8,26 @@ import (
 	"log/slog"
 	"time"
 
+	connectordomain "github.com/devpablocristo/companion/internal/connectors/usecases/domain"
 	"github.com/devpablocristo/core/concurrency/go/worker"
 	"github.com/google/uuid"
 
-	"github.com/devpablocristo/core/governance/go/governanceclient"
 	domain "github.com/devpablocristo/companion/internal/watchers/usecases/domain"
+	"github.com/devpablocristo/core/governance/go/governanceclient"
 )
-
-// PymesClient port para consultar y ejecutar acciones en Pymes Core.
-type PymesClient interface {
-	GetStaleWorkOrders(ctx context.Context, orgID string, thresholdDays int) ([]domain.PymesItem, error)
-	GetUnconfirmedAppointments(ctx context.Context, orgID string, hoursBefore int) ([]domain.PymesItem, error)
-	GetLowStockItems(ctx context.Context, orgID string, thresholdUnits int) ([]domain.PymesItem, error)
-	GetInactiveCustomers(ctx context.Context, orgID string, thresholdMonths int) ([]domain.PymesItem, error)
-	GetRevenueComparison(ctx context.Context, orgID string) (*domain.RevenueComparison, error)
-	SendWhatsAppTemplate(ctx context.Context, orgID, partyID, templateName string, params map[string]string) error
-	SendWhatsAppText(ctx context.Context, orgID, partyID, body string) error
-}
 
 // GovernanceGateway port para enviar solicitudes a Nexus Governance.
 type GovernanceGateway interface {
 	SubmitRequest(ctx context.Context, idempotencyKey string, body governanceclient.SubmitRequestBody) (governanceclient.SubmitResponse, error)
 	GetRequest(ctx context.Context, id string) (governanceclient.RequestSummary, int, error)
+	ReportResult(ctx context.Context, id string, success bool, result map[string]any, durationMS int64, errorMessage string) (int, error)
+}
+
+// ConnectorExecutor ejecuta side effects usando el pipeline gobernado de connectors.
+type ConnectorExecutor interface {
+	ListConnectors(ctx context.Context) ([]connectordomain.Connector, error)
+	BuildActionBinding(ctx context.Context, spec connectordomain.ExecutionSpec) (map[string]any, string, error)
+	Execute(ctx context.Context, spec connectordomain.ExecutionSpec) (connectordomain.ExecutionResult, error)
 }
 
 // CreateWatcherInput es la entrada para crear un watcher.
@@ -57,20 +55,25 @@ type ChatNotifier interface {
 
 // Usecases contiene la lógica de negocio del módulo watchers.
 type Usecases struct {
-	repo     Repository
-	pymes    PymesClient
-	governance   GovernanceGateway
-	notifier ChatNotifier // nil = sin notificaciones al chat
+	repo       Repository
+	governance GovernanceGateway
+	executor   ConnectorExecutor
+	notifier   ChatNotifier // nil = sin notificaciones al chat
 }
 
 // NewUsecases crea los usecases del módulo watchers.
-func NewUsecases(repo Repository, pymes PymesClient, governance GovernanceGateway) *Usecases {
-	return &Usecases{repo: repo, pymes: pymes, governance: governance}
+func NewUsecases(repo Repository, governance GovernanceGateway) *Usecases {
+	return &Usecases{repo: repo, governance: governance}
 }
 
 // SetNotifier inyecta el notificador de chat. Opcional.
 func (uc *Usecases) SetNotifier(n ChatNotifier) {
 	uc.notifier = n
+}
+
+// SetConnectorExecutor enruta acciones con side effect por connectors.
+func (uc *Usecases) SetConnectorExecutor(executor ConnectorExecutor) {
+	uc.executor = executor
 }
 
 // --- CRUD ---
@@ -155,10 +158,10 @@ func (uc *Usecases) RunWatcher(ctx context.Context, watcherID uuid.UUID) (*domai
 		return nil, ErrWatcherDisabled
 	}
 
-	items, err := uc.queryPymes(ctx, w)
+	items, err := uc.queryProductCapability(ctx, w)
 	if err != nil {
-		slog.Error("watcher query pymes failed", "watcher_id", w.ID, "error", err)
-		return nil, fmt.Errorf("query pymes: %w", err)
+		slog.Error("watcher query capability failed", "watcher_id", w.ID, "error", err)
+		return nil, fmt.Errorf("query product capability: %w", err)
 	}
 
 	result := &domain.WatcherResult{Found: len(items)}
@@ -206,7 +209,7 @@ func (uc *Usecases) RunWatcher(ctx context.Context, watcherID uuid.UUID) (*domai
 	return result, nil
 }
 
-func (uc *Usecases) queryPymes(ctx context.Context, w domain.Watcher) ([]domain.PymesItem, error) {
+func (uc *Usecases) queryProductCapability(ctx context.Context, w domain.Watcher) ([]domain.PymesItem, error) {
 	switch w.WatcherType {
 	case domain.WatcherStaleWorkOrders:
 		var cfg domain.StaleWorkOrdersConfig
@@ -216,7 +219,10 @@ func (uc *Usecases) queryPymes(ctx context.Context, w domain.Watcher) ([]domain.
 		if cfg.ThresholdDays <= 0 {
 			cfg.ThresholdDays = 3
 		}
-		return uc.pymes.GetStaleWorkOrders(ctx, w.OrgID, cfg.ThresholdDays)
+		return uc.queryItems(ctx, w, "pymes.get_work_orders", map[string]any{
+			"org_id":         w.OrgID,
+			"threshold_days": cfg.ThresholdDays,
+		})
 
 	case domain.WatcherUnconfirmedAppointments:
 		var cfg domain.UnconfirmedAppointmentsConfig
@@ -226,7 +232,10 @@ func (uc *Usecases) queryPymes(ctx context.Context, w domain.Watcher) ([]domain.
 		if cfg.HoursBeforeAppointment <= 0 {
 			cfg.HoursBeforeAppointment = 24
 		}
-		return uc.pymes.GetUnconfirmedAppointments(ctx, w.OrgID, cfg.HoursBeforeAppointment)
+		return uc.queryItems(ctx, w, "pymes.get_appointments", map[string]any{
+			"org_id":                   w.OrgID,
+			"hours_before_appointment": cfg.HoursBeforeAppointment,
+		})
 
 	case domain.WatcherLowStock:
 		var cfg domain.LowStockConfig
@@ -236,7 +245,10 @@ func (uc *Usecases) queryPymes(ctx context.Context, w domain.Watcher) ([]domain.
 		if cfg.ThresholdUnits <= 0 {
 			cfg.ThresholdUnits = 5
 		}
-		return uc.pymes.GetLowStockItems(ctx, w.OrgID, cfg.ThresholdUnits)
+		return uc.queryItems(ctx, w, "pymes.get_low_stock", map[string]any{
+			"org_id":          w.OrgID,
+			"threshold_units": cfg.ThresholdUnits,
+		})
 
 	case domain.WatcherInactiveCustomers:
 		var cfg domain.InactiveCustomersConfig
@@ -246,10 +258,13 @@ func (uc *Usecases) queryPymes(ctx context.Context, w domain.Watcher) ([]domain.
 		if cfg.ThresholdMonths <= 0 {
 			cfg.ThresholdMonths = 6
 		}
-		return uc.pymes.GetInactiveCustomers(ctx, w.OrgID, cfg.ThresholdMonths)
+		return uc.queryItems(ctx, w, "pymes.get_customers", map[string]any{
+			"org_id":           w.OrgID,
+			"threshold_months": cfg.ThresholdMonths,
+		})
 
 	case domain.WatcherRevenueDrop:
-		comparison, err := uc.pymes.GetRevenueComparison(ctx, w.OrgID)
+		comparison, err := uc.queryRevenueComparison(ctx, w)
 		if err != nil {
 			return nil, fmt.Errorf("get revenue comparison: %w", err)
 		}
@@ -279,15 +294,69 @@ func (uc *Usecases) queryPymes(ctx context.Context, w domain.Watcher) ([]domain.
 	}
 }
 
+func (uc *Usecases) queryItems(ctx context.Context, w domain.Watcher, operation string, payload map[string]any) ([]domain.PymesItem, error) {
+	result, err := uc.queryCapability(ctx, w, operation, payload)
+	if err != nil {
+		return nil, err
+	}
+	var items []domain.PymesItem
+	if err := json.Unmarshal(result.ResultJSON, &items); err != nil {
+		return nil, fmt.Errorf("parse capability items: %w", err)
+	}
+	return items, nil
+}
+
+func (uc *Usecases) queryRevenueComparison(ctx context.Context, w domain.Watcher) (*domain.RevenueComparison, error) {
+	result, err := uc.queryCapability(ctx, w, "pymes.get_revenue_comparison", map[string]any{"org_id": w.OrgID})
+	if err != nil {
+		return nil, err
+	}
+	var comparison domain.RevenueComparison
+	if err := json.Unmarshal(result.ResultJSON, &comparison); err != nil {
+		return nil, fmt.Errorf("parse revenue comparison: %w", err)
+	}
+	return &comparison, nil
+}
+
+func (uc *Usecases) queryCapability(ctx context.Context, w domain.Watcher, operation string, payload map[string]any) (connectordomain.ExecutionResult, error) {
+	if uc.executor == nil {
+		return connectordomain.ExecutionResult{}, fmt.Errorf("connector executor not configured")
+	}
+	connectorID, err := uc.findConnectorByKind(ctx, "pymes", w.OrgID)
+	if err != nil {
+		return connectordomain.ExecutionResult{}, err
+	}
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["org_id"] = w.OrgID
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return connectordomain.ExecutionResult{}, fmt.Errorf("marshal watcher query payload: %w", err)
+	}
+	return uc.executor.Execute(ctx, connectordomain.ExecutionSpec{
+		ConnectorID:      connectorID,
+		OrgID:            w.OrgID,
+		ActorID:          "nexus_companion",
+		ProductSurface:   "pymes",
+		AuthScopes:       []string{"companion:connectors:execute"},
+		RunID:            "watcher:" + w.ID.String(),
+		ToolInvocationID: "watcher-query:" + operation + ":" + w.ID.String(),
+		Operation:        operation,
+		Payload:          raw,
+	})
+}
+
 func (uc *Usecases) processItem(ctx context.Context, w domain.Watcher, item domain.PymesItem) (domain.Proposal, error) {
 	actionType := actionTypeForWatcher(w.WatcherType)
-	params, err := json.Marshal(map[string]string{
+	itemParams := map[string]string{
 		"item_id":   item.ID,
 		"item_type": item.Type,
 		"item_name": item.Name,
 		"phone":     item.Phone,
 		"party_id":  item.PartyID,
-	})
+	}
+	params, err := json.Marshal(itemParams)
 	if err != nil {
 		return domain.Proposal{}, fmt.Errorf("marshal proposal params: %w", err)
 	}
@@ -307,15 +376,35 @@ func (uc *Usecases) processItem(ctx context.Context, w domain.Watcher, item doma
 	}
 	proposal = created
 
+	execSpec, binding, bindingHash, err := uc.buildWatcherExecutionSpec(ctx, w, item, proposal.ID, nil)
+	if err != nil {
+		now := time.Now().UTC()
+		proposal.ExecutionStatus = domain.ProposalFailed
+		proposal.ResolvedAt = &now
+		proposal.ExecutionResult = marshalSyncErrorResult("build_connector_intent_failed", err)
+		_ = uc.repo.UpdateProposal(ctx, proposal)
+		return proposal, fmt.Errorf("build connector intent: %w", err)
+	}
+
 	// Consultar Governance
 	idempotencyKey := fmt.Sprintf("companion-watcher-%s-%s", w.ID, proposal.ID)
+	governanceParams := map[string]any{
+		"org_id":               w.OrgID,
+		"proposal_id":          proposal.ID.String(),
+		"watcher_id":           w.ID.String(),
+		"proposed_action_type": actionType,
+		"item":                 itemParams,
+		"action_binding":       binding,
+		"binding_hash":         bindingHash,
+	}
 	governanceResp, err := uc.governance.SubmitRequest(ctx, idempotencyKey, governanceclient.SubmitRequestBody{
 		RequesterType:  "service",
 		RequesterID:    "nexus_companion",
 		RequesterName:  "Nexus Companion Watcher",
-		ActionType:     actionType,
-		TargetSystem:   "pymes",
-		TargetResource: item.ID,
+		ActionType:     "companion.propose",
+		TargetSystem:   fmt.Sprint(binding["target_system"]),
+		TargetResource: fmt.Sprint(binding["target_resource"]),
+		Params:         governanceParams,
 		Reason:         proposal.Reason,
 	})
 	if err != nil {
@@ -337,6 +426,7 @@ func (uc *Usecases) processItem(ctx context.Context, w domain.Watcher, item doma
 	governanceID, _ := uuid.Parse(governanceResp.RequestID)
 	if governanceID != uuid.Nil {
 		proposal.GovernanceRequestID = &governanceID
+		execSpec.GovernanceRequestID = &governanceID
 	}
 
 	decision := governanceResp.Decision
@@ -345,7 +435,7 @@ func (uc *Usecases) processItem(ctx context.Context, w domain.Watcher, item doma
 	switch {
 	case decision == "allowed" || decision == "allow" || decision == "approved":
 		// Ejecutar acción
-		execErr := uc.executeAction(ctx, w, item)
+		execResult, execErr := uc.executeAction(ctx, execSpec)
 		now := time.Now().UTC()
 		proposal.ResolvedAt = &now
 		if execErr != nil {
@@ -356,9 +446,11 @@ func (uc *Usecases) processItem(ctx context.Context, w domain.Watcher, item doma
 				errJSON = []byte(`{"error":"marshal_failed"}`)
 			}
 			proposal.ExecutionResult = errJSON
+			uc.reportExecutionToGovernance(ctx, proposal.GovernanceRequestID, execResult, false, execErr.Error())
 		} else {
 			proposal.ExecutionStatus = domain.ProposalExecuted
-			proposal.ExecutionResult = json.RawMessage(`{"status":"sent"}`)
+			proposal.ExecutionResult = watcherExecutionResultJSON(execResult, "inline")
+			uc.reportExecutionToGovernance(ctx, proposal.GovernanceRequestID, execResult, true, "")
 		}
 
 	case decision == "denied" || decision == "deny" || decision == "rejected":
@@ -378,29 +470,113 @@ func (uc *Usecases) processItem(ctx context.Context, w domain.Watcher, item doma
 	return proposal, nil
 }
 
-func (uc *Usecases) executeAction(ctx context.Context, w domain.Watcher, item domain.PymesItem) error {
+func (uc *Usecases) executeAction(ctx context.Context, spec connectordomain.ExecutionSpec) (connectordomain.ExecutionResult, error) {
+	if uc.executor == nil {
+		return connectordomain.ExecutionResult{}, fmt.Errorf("connector executor not configured")
+	}
+	return uc.executor.Execute(ctx, spec)
+}
+
+func (uc *Usecases) buildWatcherExecutionSpec(ctx context.Context, w domain.Watcher, item domain.PymesItem, proposalID uuid.UUID, governanceID *uuid.UUID) (connectordomain.ExecutionSpec, map[string]any, string, error) {
 	if item.PartyID == "" && item.Phone == "" {
-		return fmt.Errorf("no contact info for item %s", item.ID)
+		return connectordomain.ExecutionSpec{}, nil, "", fmt.Errorf("no contact info for item %s", item.ID)
 	}
+	if uc.executor == nil {
+		return connectordomain.ExecutionSpec{}, nil, "", fmt.Errorf("connector executor not configured")
+	}
+	connectorID, err := uc.findConnectorByKind(ctx, "pymes", w.OrgID)
+	if err != nil {
+		return connectordomain.ExecutionSpec{}, nil, "", err
+	}
+	payload, err := json.Marshal(map[string]any{
+		"org_id":   w.OrgID,
+		"party_id": item.PartyID,
+		"body":     watcherMessage(w.WatcherType, item),
+	})
+	if err != nil {
+		return connectordomain.ExecutionSpec{}, nil, "", fmt.Errorf("marshal watcher connector payload: %w", err)
+	}
+	spec := connectordomain.ExecutionSpec{
+		ConnectorID:         connectorID,
+		OrgID:               w.OrgID,
+		ActorID:             "nexus_companion",
+		ProductSurface:      "pymes",
+		AuthScopes:          []string{"companion:connectors:execute"},
+		Operation:           "pymes.send_whatsapp_text",
+		Payload:             payload,
+		IdempotencyKey:      fmt.Sprintf("watcher-execute-%s", proposalID.String()),
+		GovernanceRequestID: governanceID,
+	}
+	binding, bindingHash, err := uc.executor.BuildActionBinding(ctx, spec)
+	if err != nil {
+		return connectordomain.ExecutionSpec{}, nil, "", err
+	}
+	return spec, binding, bindingHash, nil
+}
 
-	message := fmt.Sprintf("Hola! Te contactamos desde el negocio: %s", item.Name)
+func (uc *Usecases) findConnectorByKind(ctx context.Context, kind, orgID string) (uuid.UUID, error) {
+	conns, err := uc.executor.ListConnectors(ctx)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("list connectors: %w", err)
+	}
+	for _, c := range conns {
+		if c.Kind != kind || !c.Enabled {
+			continue
+		}
+		if c.OrgID != "" && c.OrgID == orgID {
+			return c.ID, nil
+		}
+	}
+	return uuid.Nil, fmt.Errorf("connector kind %s not configured for org %s", kind, orgID)
+}
 
-	switch w.WatcherType {
+func watcherMessage(kind domain.WatcherType, item domain.PymesItem) string {
+	switch kind {
 	case domain.WatcherStaleWorkOrders:
-		message = fmt.Sprintf("Hola! Te informamos que tu orden de trabajo esta en proceso. Lamentamos la demora y estamos trabajando en ello.")
+		return "Hola! Te informamos que tu orden de trabajo esta en proceso. Lamentamos la demora y estamos trabajando en ello."
 	case domain.WatcherUnconfirmedAppointments:
-		message = fmt.Sprintf("Hola! Te recordamos que tenes un turno agendado. Por favor, confirma tu asistencia.")
+		return "Hola! Te recordamos que tenes un turno agendado. Por favor, confirma tu asistencia."
 	case domain.WatcherInactiveCustomers:
-		message = fmt.Sprintf("Hola! Hace tiempo que no nos visitas. Te esperamos!")
+		return "Hola! Hace tiempo que no nos visitas. Te esperamos!"
 	case domain.WatcherLowStock, domain.WatcherRevenueDrop:
-		// Estos notifican al dueño, no al cliente
-		return uc.pymes.SendWhatsAppText(ctx, w.OrgID, item.PartyID, fmt.Sprintf("Alerta: %s", item.Name))
+		return fmt.Sprintf("Alerta: %s", item.Name)
+	default:
+		return fmt.Sprintf("Hola! Te contactamos desde el negocio: %s", item.Name)
 	}
+}
 
-	if item.PartyID != "" {
-		return uc.pymes.SendWhatsAppText(ctx, w.OrgID, item.PartyID, message)
+func watcherExecutionResultJSON(result connectordomain.ExecutionResult, via string) json.RawMessage {
+	raw, err := json.Marshal(map[string]any{
+		"status":                 result.Status,
+		"via":                    via,
+		"connector_execution_id": result.ID.String(),
+		"external_ref":           result.ExternalRef,
+	})
+	if err != nil {
+		return json.RawMessage(`{"status":"unknown"}`)
 	}
-	return nil
+	return raw
+}
+
+func (uc *Usecases) reportExecutionToGovernance(ctx context.Context, governanceID *uuid.UUID, result connectordomain.ExecutionResult, success bool, errorMessage string) {
+	if uc.governance == nil || governanceID == nil || *governanceID == uuid.Nil {
+		return
+	}
+	payload := map[string]any{
+		"connector_execution_id": result.ID.String(),
+		"connector_id":           result.ConnectorID.String(),
+		"operation":              result.Operation,
+		"external_ref":           result.ExternalRef,
+		"org_id":                 result.OrgID,
+		"actor_id":               result.ActorID,
+	}
+	status, err := uc.governance.ReportResult(ctx, governanceID.String(), success, payload, result.DurationMS, errorMessage)
+	if err != nil || status >= 400 {
+		slog.Warn("watcher report execution to governance failed",
+			"governance_request_id", governanceID.String(),
+			"status", status,
+			"error", err)
+	}
 }
 
 // RunAllEnabled ejecuta todos los watchers habilitados de una organización.
@@ -432,6 +608,21 @@ func (uc *Usecases) RunWatcherLoop(ctx context.Context, interval time.Duration, 
 			if err := uc.RunAllEnabled(tickCtx, orgID); err != nil {
 				slog.Error("watcher loop: run org failed", "org_id", orgID, "error", err)
 			}
+		}
+	})
+}
+
+// RunPendingProposalSyncLoop reconcilia periódicamente proposals que quedaron
+// esperando decisión final en Nexus.
+func (uc *Usecases) RunPendingProposalSyncLoop(ctx context.Context, interval time.Duration, batchSize int) {
+	worker.RunPeriodic(ctx, interval, "watcher-proposal-sync-loop", func(tickCtx context.Context) {
+		orgIDs, err := uc.repo.ListEnabledOrgIDs(tickCtx)
+		if err != nil {
+			slog.Error("watcher proposal sync: list org ids failed", "error", err)
+			return
+		}
+		for _, orgID := range orgIDs {
+			uc.SyncPendingProposals(tickCtx, orgID, batchSize)
 		}
 	})
 }
@@ -498,13 +689,20 @@ func (uc *Usecases) SyncPendingProposals(ctx context.Context, orgID string, limi
 			continue
 		}
 
-		if execErr := uc.executeAction(ctx, w, item); execErr != nil {
+		execSpec, _, _, specErr := uc.buildWatcherExecutionSpec(ctx, w, item, p.ID, p.GovernanceRequestID)
+		if specErr != nil {
+			slog.Error("sync build connector intent failed", "proposal_id", p.ID, "error", specErr)
+			p.ExecutionStatus = domain.ProposalFailed
+			p.ExecutionResult = marshalSyncErrorResult("build_connector_intent_failed", specErr)
+		} else if execResult, execErr := uc.executeAction(ctx, execSpec); execErr != nil {
 			slog.Error("sync execute approved proposal failed", "proposal_id", p.ID, "error", execErr)
 			p.ExecutionStatus = domain.ProposalFailed
 			p.ExecutionResult = marshalSyncErrorResult("execution_failed", execErr)
+			uc.reportExecutionToGovernance(ctx, p.GovernanceRequestID, execResult, false, execErr.Error())
 		} else {
 			p.ExecutionStatus = domain.ProposalExecuted
-			p.ExecutionResult = json.RawMessage(`{"status":"sent","via":"sync_loop"}`)
+			p.ExecutionResult = watcherExecutionResultJSON(execResult, "sync_loop")
+			uc.reportExecutionToGovernance(ctx, p.GovernanceRequestID, execResult, true, "")
 		}
 		if err := uc.repo.UpdateProposal(ctx, p); err != nil {
 			slog.Error("sync update proposal failed", "proposal_id", p.ID, "error", err)

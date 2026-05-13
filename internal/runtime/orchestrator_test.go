@@ -81,6 +81,7 @@ func TestOrchestrator_Run_withToolCall(t *testing.T) {
 		},
 	}
 	toolkit := &ToolKit{
+		Schemas: []ToolSchema{{Name: "get_overview"}},
 		Handlers: map[string]ToolHandler{
 			"get_overview": func(_ context.Context, _ json.RawMessage) (string, error) {
 				return `{"pending_approvals": 3}`, nil
@@ -107,6 +108,48 @@ func TestOrchestrator_Run_withToolCall(t *testing.T) {
 	}
 	if len(result.Trace.ToolCalls) != 1 || !result.Trace.ToolCalls[0].Allowed {
 		t.Fatalf("expected allowed tool trace, got %+v", result.Trace.ToolCalls)
+	}
+}
+
+func TestRouteAgent_filtersToolsByTenantAndScopes(t *testing.T) {
+	t.Parallel()
+
+	toolkit := &ToolKit{
+		Schemas: []ToolSchema{
+			{Name: "get_overview"},
+			{Name: "check_approvals"},
+			{Name: "list_watchers"},
+			{Name: "remember"},
+		},
+		policies: map[string]toolPolicy{
+			"get_overview":    {RequiresTenant: true},
+			"check_approvals": {RequiresTenant: true, RequiredAnyScope: []string{scopeCompanionGovernanceAdmin}},
+			"list_watchers":   {RequiresTenant: true, RequiredAnyScope: []string{scopeCompanionWatchersRead}},
+			"remember":        {RequiresUser: true},
+		},
+	}
+
+	noTenant := BuildIdentityChain("user-1", "", "companion")
+	route := RouteAgent("estado", "companion", toolkit, noTenant, AutonomyA2)
+	if len(route.AllowedTools) != 1 || route.AllowedTools[0] != "remember" {
+		t.Fatalf("expected only user-scoped memory tool without tenant, got %+v", route.AllowedTools)
+	}
+
+	withScopes := BuildIdentityChain("user-1", "org-1", "companion", scopeCompanionGovernanceAdmin, scopeCompanionWatchersRead)
+	route = RouteAgent("estado", "companion", toolkit, withScopes, AutonomyA2)
+	if got, want := len(route.AllowedTools), 2; got != want {
+		t.Fatalf("expected %d tools with tenant and scopes, got %d: %+v", want, got, route.AllowedTools)
+	}
+}
+
+func TestValidateToolPolicy_rejectsToolOutsideRoute(t *testing.T) {
+	t.Parallel()
+
+	toolkit := &ToolKit{policies: map[string]toolPolicy{"list_policies": {RequiredAnyScope: []string{scopeCompanionGovernanceAdmin}}}}
+	identity := BuildIdentityChain("user-1", "org-1", "companion")
+	event := ValidateToolPolicy("list_policies", json.RawMessage(`{}`), identity, AgentRoute{AllowedTools: []string{"recall"}}, toolkit)
+	if event == nil || event.Type != "tool_policy" {
+		t.Fatalf("expected tool_policy rejection, got %+v", event)
 	}
 }
 

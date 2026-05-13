@@ -10,9 +10,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/devpablocristo/core/governance/go/governanceclient"
 	connectordomain "github.com/devpablocristo/companion/internal/connectors/usecases/domain"
 	domain "github.com/devpablocristo/companion/internal/tasks/usecases/domain"
+	"github.com/devpablocristo/core/governance/go/governanceclient"
 )
 
 // makeWaitingForApprovalTask prepara una task en estado WaitingForApproval con
@@ -34,13 +34,13 @@ func makeWaitingForApprovalTask(t *testing.T, repo *fakeRepo, governanceRequestI
 	}
 	now := time.Now().UTC()
 	repo.governanceSync[task.ID] = domain.TaskGovernanceSyncState{
-		TaskID:           task.ID,
+		TaskID:               task.ID,
 		GovernanceRequestID:  governanceRequestID,
 		LastGovernanceStatus: "pending",
-		LastCheckedAt:    now,
-		NextCheckAt:      now.Add(time.Minute),
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		LastCheckedAt:        now,
+		NextCheckAt:          now.Add(time.Minute),
+		CreatedAt:            now,
+		UpdatedAt:            now,
 	}
 	repo.executionPlan[task.ID] = domain.TaskExecutionPlan{
 		TaskID:         task.ID,
@@ -56,7 +56,7 @@ func makeWaitingForApprovalTask(t *testing.T, repo *fakeRepo, governanceRequestI
 
 func newGateTestRepo() *fakeRepo {
 	return &fakeRepo{
-		governanceSync:     make(map[uuid.UUID]domain.TaskGovernanceSyncState),
+		governanceSync: make(map[uuid.UUID]domain.TaskGovernanceSyncState),
 		executionPlan:  make(map[uuid.UUID]domain.TaskExecutionPlan),
 		executionState: make(map[uuid.UUID]domain.TaskExecutionState),
 	}
@@ -172,16 +172,16 @@ func TestExecuteTask_AllowsWhenGovernanceApproved_FlagOn(t *testing.T) {
 		executeFn: func(ctx context.Context, spec connectordomain.ExecutionSpec) (connectordomain.ExecutionResult, error) {
 			executed = true
 			return connectordomain.ExecutionResult{
-				ID:              uuid.New(),
-				ConnectorID:     spec.ConnectorID,
-				Operation:       spec.Operation,
-				Status:          connectordomain.ExecSuccess,
-				ExternalRef:     "ref",
-				Payload:         spec.Payload,
-				ResultJSON:      json.RawMessage(`{"ok":true}`),
-				TaskID:          spec.TaskID,
+				ID:                  uuid.New(),
+				ConnectorID:         spec.ConnectorID,
+				Operation:           spec.Operation,
+				Status:              connectordomain.ExecSuccess,
+				ExternalRef:         "ref",
+				Payload:             spec.Payload,
+				ResultJSON:          json.RawMessage(`{"ok":true}`),
+				TaskID:              spec.TaskID,
 				GovernanceRequestID: spec.GovernanceRequestID,
-				CreatedAt:       time.Now().UTC(),
+				CreatedAt:           time.Now().UTC(),
 			}, nil
 		},
 	})

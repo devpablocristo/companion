@@ -345,6 +345,13 @@ func defaultAPIKeyScopes(name string) []string {
 			"companion:tasks:write",
 			"companion:connectors:execute",
 			"companion:connectors:admin",
+			"companion:watchers:read",
+			"companion:watchers:write",
+			"companion:watchers:execute",
+			"companion:governance:read",
+			"companion:governance:admin",
+			"companion:governance-assist:read",
+			"companion:governance-assist:admin",
 		}
 	default:
 		return nil

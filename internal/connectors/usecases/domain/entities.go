@@ -39,7 +39,7 @@ type Capability struct {
 	RequiredRoles      []string              `json:"required_roles,omitempty"`
 	RequiredScopes     []string              `json:"required_scopes,omitempty"`
 	RequiredModules    []string              `json:"required_modules,omitempty"`
-	RequiresGovernance     bool                  `json:"requires_governance"`
+	RequiresGovernance bool                  `json:"requires_governance"`
 	ApprovalPolicy     ApprovalPolicy        `json:"approval_policy,omitempty"`
 	InputSchema        map[string]any        `json:"input_schema,omitempty"`
 	OutputSchema       map[string]any        `json:"output_schema,omitempty"`
@@ -96,7 +96,7 @@ type CapabilityDecision struct {
 	Operation           string   `json:"operation"`
 	SideEffectClass     string   `json:"side_effect_class"`
 	RiskClass           string   `json:"risk_class"`
-	RequiresGovernance      bool     `json:"requires_governance"`
+	RequiresGovernance  bool     `json:"requires_governance"`
 	RequiredScopes      []string `json:"required_scopes,omitempty"`
 	IdempotencyRequired bool     `json:"idempotency_required"`
 }
@@ -113,35 +113,39 @@ type CapabilityFilter struct {
 
 // ExecutionSpec especificación de una ejecución en un conector.
 type ExecutionSpec struct {
-	ConnectorID     uuid.UUID
-	OrgID           string
-	ActorID         string
-	Operation       string
-	Payload         json.RawMessage
-	IdempotencyKey  string
-	TaskID          *uuid.UUID
+	ConnectorID         uuid.UUID
+	OrgID               string
+	ActorID             string
+	ProductSurface      string
+	AuthScopes          []string
+	RunID               string
+	ToolInvocationID    string
+	Operation           string
+	Payload             json.RawMessage
+	IdempotencyKey      string
+	TaskID              *uuid.UUID
 	GovernanceRequestID *uuid.UUID
 }
 
 // ExecutionResult resultado de una ejecución.
 type ExecutionResult struct {
-	ID              uuid.UUID
-	ConnectorID     uuid.UUID
-	OrgID           string
-	ActorID         string
-	Operation       string
-	Status          string // success, failure, partial
-	ExternalRef     string // referencia en el sistema externo
-	Payload         json.RawMessage
-	ResultJSON      json.RawMessage
-	EvidenceJSON    json.RawMessage
-	ErrorMessage    string
-	Retryable       bool
-	DurationMS      int64
-	IdempotencyKey  string
-	TaskID          *uuid.UUID
+	ID                  uuid.UUID
+	ConnectorID         uuid.UUID
+	OrgID               string
+	ActorID             string
+	Operation           string
+	Status              string // success, failure, partial
+	ExternalRef         string // referencia en el sistema externo
+	Payload             json.RawMessage
+	ResultJSON          json.RawMessage
+	EvidenceJSON        json.RawMessage
+	ErrorMessage        string
+	Retryable           bool
+	DurationMS          int64
+	IdempotencyKey      string
+	TaskID              *uuid.UUID
 	GovernanceRequestID *uuid.UUID
-	CreatedAt       time.Time
+	CreatedAt           time.Time
 }
 
 // ExecutionStatus valores de estado de ejecución.
@@ -277,7 +281,7 @@ func (c Capability) RuntimeDecision() CapabilityDecision {
 		Operation:           c.Operation,
 		SideEffectClass:     c.SideEffectClass,
 		RiskClass:           c.RiskClass,
-		RequiresGovernance:      c.NeedsGovernance(),
+		RequiresGovernance:  c.NeedsGovernance(),
 		RequiredScopes:      append([]string(nil), c.RequiredScopes...),
 		IdempotencyRequired: c.Idempotency.Required,
 	}

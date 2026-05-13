@@ -1,7 +1,9 @@
 # Companion
 
-Empleado IA transversal del ecosistema. Consume **Nexus Governance** (proyecto
-separado) para todas las acciones que requieran approval/audit.
+Empleado IA transversal del ecosistema. Companion concentra runtime LLM,
+agentes, memoria, tools, planificación y ejecución asistida. Consume
+**Nexus Governance** (proyecto separado) para toda acción sensible que requiera
+policy, approval, risk o audit fuerte.
 
 > La DB se llama `nexus_companion` por consistencia histórica con el resto
 > del ecosistema; el módulo Go es `github.com/devpablocristo/companion`.
@@ -30,7 +32,7 @@ separado) para todas las acciones que requieran approval/audit.
 ```
 companion/
 ├── cmd/api/                 # entry point del backend Go
-├── internal/                # módulos: tasks, runtime, connectors, memory, watchers
+├── internal/                # tasks, runtime, connectors, memory, watchers, governance_assist
 ├── wire/                    # DI manual + cliente HTTP a Nexus governance
 ├── migrations/              # PostgreSQL embebidas
 ├── console/                 # frontend (React + Vite + TS)
@@ -76,18 +78,36 @@ URLs por defecto (host):
 | Companion UI   | `http://localhost:13002`  |
 | Nexus Gov API  | `http://localhost:18084`  |
 
-## Variables de entorno
+## Variables de entorno principales
 
 Ver `.env.example`.
 
 Convenciones:
 - `GOVERNANCE_BASE_URL`, `GOVERNANCE_API_KEY` — apuntan al servicio Nexus governance externo.
-- `COMPANION_API_KEYS` (dentro del container) — auth del propio companion.
+- `COMPANION_API_KEYS` (dentro del container) — auth del propio Companion.
+  Soporta metadata: `actor`, `org_id`, `scopes`, `service_principal`.
 - `COMPANION_AUTH_*` — OIDC/JWKS opcional para sesión humana.
 - `COMPANION_LLM_PROVIDER` / `COMPANION_LLM_API_KEY` / `COMPANION_LLM_MODEL`
   — runtime IA del companion.
 - `COMPANION_GOVERNANCE_SYNC_INTERVAL_SEC` — período del loop que reconcilia
   decisiones de governance con propuestas pendientes.
+- `COMPANION_STRICT_GOVERNANCE` — cuando está en `true`, Companion falla
+  cerrado para ejecuciones sensibles sin grant Nexus exacto.
+- `PYMES_BASE_URL` / `PYMES_API_KEY` — adapter Pymes, opcional.
+- `PONTI_BASE_URL` / `PONTI_API_KEY` — adapter Ponti por manifest, opcional.
+- `COMPANION_WATCHER_INTERVAL_SEC` — loop proactivo de watchers.
+- `COMPANION_WATCHER_SYNC_INTERVAL_SEC` — reconciliación de proposals de watchers
+  pendientes en Nexus.
+
+Scopes relevantes:
+
+| Scope | Uso |
+|---|---|
+| `companion:tasks:read` / `companion:tasks:write` | Tasks y chat |
+| `companion:connectors:execute` / `companion:connectors:admin` | Capabilities y ejecución |
+| `companion:watchers:read` / `write` / `execute` | Watchers |
+| `companion:governance:read` / `admin` | Integración Nexus; runtime solo expone datos Nexus con `admin` |
+| `companion:governance-assist:read` / `admin` | Helpers IA sobre Nexus |
 
 ## Tests
 
@@ -97,13 +117,15 @@ make qa                      # build + vet + test -race
 make smoke                   # smoke contra companion + nexus levantados
 ```
 
-## Próximos pasos sugeridos
+## Documentación
 
-1. (opcional) Podar el `console/` de las vistas que NO consumen este repo:
-   las de governance pura (`Policies`, `Audit`, `ActionTypes`, `Config`,
-   `Dashboard`, `Learning`, `Requests`). Companion necesita: `Tasks`,
-   `Connectors`, `Memory`, `Chat`, `Sandbox`, `Agents`, `Home`, y `Inbox`/`Replay`
-   por el feed mixto que mezcla approvals de Nexus con tasks de Companion.
-2. Configurar el deploy productivo: ajustar `console/nginx.conf.template`
-   para apuntar a la URL real de Nexus governance (hoy default
-   `http://host.docker.internal:18084`).
+- `ARCHITECTURE.md` — mapa del sistema y flujos.
+- `BOUNDARIES.md` — responsabilidades Companion/Nexus/productos/core/modules.
+- `MEMORY.md` — scopes, aislamiento y retención.
+- `AGENTS.md` — agent profile mínimo, autonomía y tool allowlist.
+- `TOOLS.md` — catálogo de tools y reglas de exposición.
+- `NEXUS_INTEGRATION.md` — decisiones, evidence y result reporting.
+- `SECURITY.md` — auth, scopes, multi-tenant y prompt injection.
+- `TESTING.md` — suites obligatorias.
+- `OPERATIONS.md` — runbook local/operativo.
+- `openapi.yaml` — contrato HTTP inicial.

@@ -7,22 +7,22 @@ import (
 
 	"github.com/devpablocristo/core/concurrency/go/fsm"
 
-	"github.com/devpablocristo/core/governance/go/governanceclient"
 	domain "github.com/devpablocristo/companion/internal/tasks/usecases/domain"
+	"github.com/devpablocristo/core/governance/go/governanceclient"
 )
 
 // Eventos de transición de tarea (valores opacos para la FSM).
 const (
-	evInvestigate                   = "investigate"
+	evInvestigate                       = "investigate"
 	evGovernancePendingApproval         = "governance_pending_approval"
 	evGovernanceResolvedAllow           = "governance_resolved_allow"
 	evGovernanceResolvedAllowAwaitInput = "governance_resolved_allow_await_input"
 	evGovernanceResolvedDeny            = "governance_resolved_deny"
-	evStartExecution                = "start_execution"
-	evRetryExecution                = "retry_execution"
-	evExecutionSucceeded            = "execution_succeeded"
-	evExecutionVerified             = "execution_verified"
-	evExecutionFailed               = "execution_failed"
+	evStartExecution                    = "start_execution"
+	evRetryExecution                    = "retry_execution"
+	evExecutionSucceeded                = "execution_succeeded"
+	evExecutionVerified                 = "execution_verified"
+	evExecutionFailed                   = "execution_failed"
 )
 
 func normalizeGovernanceStatus(status string) string {

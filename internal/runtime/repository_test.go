@@ -105,6 +105,9 @@ func TestOrchestrator_PersistsTraceOnDirectReply(t *testing.T) {
 	if saved[0].Error != "" {
 		t.Fatalf("expected no error, got %q", saved[0].Error)
 	}
+	if saved[0].PromptVersion != SystemPromptVersion {
+		t.Fatalf("expected prompt version %q, got %q", SystemPromptVersion, saved[0].PromptVersion)
+	}
 	if saved[0].CompletedAt.IsZero() {
 		t.Fatal("expected completed_at to be set")
 	}

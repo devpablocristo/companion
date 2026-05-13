@@ -23,7 +23,7 @@ services:
     environment:
       PORT: "8080"
       DATABASE_URL: "postgres://postgres:postgres@companion-postgres:5432/nexus_companion?sslmode=disable"
-      COMPANION_API_KEYS: "admin=${COMPANION_ADMIN_API_KEY:-companion-admin-dev-key}|service_principal=true|org_id=${COMPANION_DEV_ORG_ID:-local-dev-org}|scopes=companion:tasks:read+companion:tasks:write+companion:connectors:execute+companion:connectors:admin"
+      COMPANION_API_KEYS: "admin=${COMPANION_ADMIN_API_KEY:-companion-admin-dev-key}|service_principal=true|org_id=${COMPANION_DEV_ORG_ID:-local-dev-org}|scopes=companion:tasks:read+companion:tasks:write+companion:connectors:execute+companion:connectors:admin+companion:watchers:read+companion:watchers:write+companion:watchers:execute+companion:governance:read+companion:governance:admin+companion:governance-assist:read+companion:governance-assist:admin"
       COMPANION_AUTH_ISSUER_URL: "${COMPANION_AUTH_ISSUER_URL:-}"
       COMPANION_AUTH_AUDIENCE: "${COMPANION_AUTH_AUDIENCE:-}"
       # Apunta al servicio Nexus Governance (proyecto separado).
@@ -33,7 +33,10 @@ services:
       COMPANION_GOVERNANCE_SYNC_INTERVAL_SEC: "${COMPANION_GOVERNANCE_SYNC_INTERVAL_SEC:-30}"
       PYMES_BASE_URL: "${PYMES_BASE_URL:-}"
       PYMES_API_KEY: "${PYMES_API_KEY:-}"
+      PONTI_BASE_URL: "${PONTI_BASE_URL:-}"
+      PONTI_API_KEY: "${PONTI_API_KEY:-}"
       COMPANION_WATCHER_INTERVAL_SEC: "${COMPANION_WATCHER_INTERVAL_SEC:-0}"
+      COMPANION_WATCHER_SYNC_INTERVAL_SEC: "${COMPANION_WATCHER_SYNC_INTERVAL_SEC:-0}"
       COMPANION_LLM_PROVIDER: "${COMPANION_LLM_PROVIDER:-echo}"
       COMPANION_LLM_API_KEY: "${COMPANION_LLM_API_KEY:-}"
       COMPANION_LLM_MODEL: "${COMPANION_LLM_MODEL:-qwen2.5:3b}"

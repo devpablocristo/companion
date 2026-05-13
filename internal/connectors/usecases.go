@@ -2,6 +2,8 @@ package connectors
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -29,9 +31,41 @@ type Repository interface {
 	ListExecutions(ctx context.Context, connectorID uuid.UUID, limit int) ([]domain.ExecutionResult, error)
 }
 
+// GovernanceExecutionIntent es la acción exacta que Nexus debe haber aprobado.
+type GovernanceExecutionIntent struct {
+	GovernanceRequestID uuid.UUID
+	OrgID               string
+	ActorID             string
+	ActorType           string
+	ProductSurface      string
+	TaskID              *uuid.UUID
+	RunID               string
+	ToolInvocationID    string
+	ConnectorID         uuid.UUID
+	CapabilityID        string
+	Operation           string
+	TargetSystem        string
+	TargetResource      string
+	PayloadHash         string
+	IdempotencyKey      string
+	RiskHint            string
+	ActionBinding       map[string]any
+	BindingHash         string
+}
+
+const toolIntentSchemaVersion = "tool_intent.v1"
+
+// GovernanceRequestMeta es el subconjunto de Nexus usado para validar grants.
+type GovernanceRequestMeta struct {
+	Status        string
+	OrgID         string
+	BindingHash   string
+	ActionBinding map[string]any
+}
+
 // GovernanceChecker verifica que una ejecución tiene aprobación de Nexus y pertenece al tenant esperado.
 type GovernanceChecker interface {
-	AuthorizeExecution(ctx context.Context, governanceRequestID uuid.UUID, orgID string) (bool, error)
+	AuthorizeExecution(ctx context.Context, intent GovernanceExecutionIntent) (bool, error)
 }
 
 // Usecases lógica de negocio de conectores.
@@ -113,6 +147,18 @@ func (uc *Usecases) Execute(ctx context.Context, spec domain.ExecutionSpec) (dom
 	if !operationKnown {
 		return domain.ExecutionResult{}, ErrOperationUnknown
 	}
+	if err := validateExecutionContext(spec, capability); err != nil {
+		return domain.ExecutionResult{}, err
+	}
+	payloadHash, err := payloadHash(spec.Payload)
+	if err != nil {
+		return domain.ExecutionResult{}, fmt.Errorf("%w: payload must be canonical JSON", ErrInvalidPayload)
+	}
+	actionBinding := buildActionBinding(config, capability, spec, payloadHash)
+	bindingHash, err := actionBindingHash(actionBinding)
+	if err != nil {
+		return domain.ExecutionResult{}, err
+	}
 
 	if spec.IdempotencyKey != "" && spec.TaskID != nil {
 		existing, err := uc.repo.GetExecutionByIdempotency(ctx, *spec.TaskID, spec.Operation, spec.GovernanceRequestID, spec.IdempotencyKey)
@@ -137,7 +183,26 @@ func (uc *Usecases) Execute(ctx context.Context, spec domain.ExecutionSpec) (dom
 		return domain.ExecutionResult{}, ErrUngated
 	}
 	if capability.NeedsGovernance() && spec.GovernanceRequestID != nil {
-		approved, err := uc.checker.AuthorizeExecution(ctx, *spec.GovernanceRequestID, spec.OrgID)
+		approved, err := uc.checker.AuthorizeExecution(ctx, GovernanceExecutionIntent{
+			GovernanceRequestID: *spec.GovernanceRequestID,
+			OrgID:               spec.OrgID,
+			ActorID:             spec.ActorID,
+			ActorType:           "agent",
+			ProductSurface:      productSurfaceFor(capability, spec),
+			TaskID:              spec.TaskID,
+			RunID:               runIDFor(spec),
+			ToolInvocationID:    toolInvocationIDFor(capability, spec),
+			ConnectorID:         spec.ConnectorID,
+			CapabilityID:        capability.ID,
+			Operation:           spec.Operation,
+			TargetSystem:        config.Kind,
+			TargetResource:      config.ID.String(),
+			PayloadHash:         payloadHash,
+			IdempotencyKey:      spec.IdempotencyKey,
+			RiskHint:            capability.RiskClass,
+			ActionBinding:       actionBinding,
+			BindingHash:         bindingHash,
+		})
 		if err != nil {
 			slog.Error("check governance approval", "error", err, "governance_request_id", spec.GovernanceRequestID)
 			return domain.ExecutionResult{}, fmt.Errorf("check governance approval: %w", err)
@@ -212,6 +277,42 @@ func (uc *Usecases) Execute(ctx context.Context, spec domain.ExecutionSpec) (dom
 	return result, nil
 }
 
+// BuildActionBinding calcula el contrato exacto que debe enviarse a Nexus
+// antes de ejecutar esta capability.
+func (uc *Usecases) BuildActionBinding(ctx context.Context, spec domain.ExecutionSpec) (map[string]any, string, error) {
+	config, err := uc.repo.GetConnector(ctx, spec.ConnectorID)
+	if err != nil {
+		return nil, "", fmt.Errorf("get connector config: %w", err)
+	}
+	if err := ensureConnectorOrg(config.OrgID, spec.OrgID); err != nil {
+		return nil, "", err
+	}
+	conn, ok := uc.registry.Get(config.Kind)
+	if !ok {
+		return nil, "", ErrNotFound
+	}
+	for _, cap := range conn.Capabilities() {
+		if cap.Operation != spec.Operation {
+			continue
+		}
+		capability := cap.Normalized(conn.ID(), conn.Kind())
+		if err := validateExecutionContext(spec, capability); err != nil {
+			return nil, "", err
+		}
+		payloadHash, err := payloadHash(spec.Payload)
+		if err != nil {
+			return nil, "", fmt.Errorf("%w: payload must be canonical JSON", ErrInvalidPayload)
+		}
+		binding := buildActionBinding(config, capability, spec, payloadHash)
+		hash, err := actionBindingHash(binding)
+		if err != nil {
+			return nil, "", err
+		}
+		return binding, hash, nil
+	}
+	return nil, "", ErrOperationUnknown
+}
+
 // ListExecutions lista resultados de ejecución de un conector.
 func (uc *Usecases) ListExecutions(ctx context.Context, connectorID uuid.UUID, limit int) ([]domain.ExecutionResult, error) {
 	if limit <= 0 {
@@ -260,56 +361,42 @@ type ConnectorCapabilities struct {
 
 // GovernanceCheckerAdapter adapta el governanceclient para verificar aprobaciones.
 type GovernanceCheckerAdapter struct {
-	getRequest func(ctx context.Context, id uuid.UUID) (status string, orgID string, httpStatus int, err error)
+	getRequest func(ctx context.Context, id uuid.UUID) (GovernanceRequestMeta, int, error)
 }
 
 // NewGovernanceCheckerAdapter crea un adaptador para verificar aprobaciones.
-func NewGovernanceCheckerAdapter(getRequest func(ctx context.Context, id uuid.UUID) (string, string, int, error)) *GovernanceCheckerAdapter {
+func NewGovernanceCheckerAdapter(getRequest func(ctx context.Context, id uuid.UUID) (GovernanceRequestMeta, int, error)) *GovernanceCheckerAdapter {
 	return &GovernanceCheckerAdapter{getRequest: getRequest}
 }
 
 // AuthorizeExecution verifica si un request de Nexus fue aprobado y pertenece a la misma org.
-func (a *GovernanceCheckerAdapter) AuthorizeExecution(ctx context.Context, governanceRequestID uuid.UUID, orgID string) (bool, error) {
-	status, governanceOrgID, _, err := a.getRequest(ctx, governanceRequestID)
+func (a *GovernanceCheckerAdapter) AuthorizeExecution(ctx context.Context, intent GovernanceExecutionIntent) (bool, error) {
+	meta, _, err := a.getRequest(ctx, intent.GovernanceRequestID)
 	if err != nil {
 		return false, err
 	}
-	if strings.TrimSpace(orgID) != "" && strings.TrimSpace(governanceOrgID) != "" && strings.TrimSpace(orgID) != strings.TrimSpace(governanceOrgID) {
+	if strings.TrimSpace(intent.OrgID) == "" || strings.TrimSpace(meta.OrgID) == "" || strings.TrimSpace(intent.OrgID) != strings.TrimSpace(meta.OrgID) {
 		return false, ErrForbidden
 	}
-	// Estados que indican aprobación
-	return status == "allowed" || status == "approved", nil
+	if strings.TrimSpace(intent.BindingHash) == "" || strings.TrimSpace(meta.BindingHash) == "" || strings.TrimSpace(intent.BindingHash) != strings.TrimSpace(meta.BindingHash) {
+		return false, ErrUngated
+	}
+	// Estados que indican que Nexus ya permitió la ejecución.
+	return meta.Status == "allowed" || meta.Status == "approved" || meta.Status == "executed", nil
 }
 
 // SeedDefaultConnectors registra conectores por defecto en el registry y en DB.
 func (uc *Usecases) SeedDefaultConnectors(ctx context.Context) error {
 	for _, conn := range uc.registry.List() {
-		existing, _ := uc.repo.ListConnectors(ctx)
-		found := false
-		for _, e := range existing {
-			if e.Kind == conn.Kind() {
-				found = true
-				break
-			}
+		capsJSON, mErr := json.Marshal(conn.Capabilities())
+		if mErr != nil {
+			slog.Error("seed connector marshal capabilities", "kind", conn.Kind(), "error", mErr)
+			capsJSON = []byte(`[]`)
 		}
-		if !found {
-			capsJSON, mErr := json.Marshal(conn.Capabilities())
-			if mErr != nil {
-				slog.Error("seed connector marshal capabilities", "kind", conn.Kind(), "error", mErr)
-				capsJSON = []byte(`[]`)
-			}
-			_, err := uc.repo.SaveConnector(ctx, domain.Connector{
-				Name:       conn.Kind(),
-				Kind:       conn.Kind(),
-				Enabled:    true,
-				ConfigJSON: json.RawMessage(`{}`),
-			})
-			if err != nil {
-				slog.Error("seed connector", "kind", conn.Kind(), "error", err)
-			} else {
-				slog.Info("seeded connector", "kind", conn.Kind(), "capabilities", string(capsJSON))
-			}
-		}
+		// Final boundary: connector rows are tenant-owned credentials/config.
+		// Static registry entries publish capability schemas only; they must not
+		// create org_id='' rows that later act as global execution wildcard.
+		slog.InfoContext(ctx, "registered connector capability template", "kind", conn.Kind(), "capabilities", string(capsJSON))
 	}
 	return nil
 }
@@ -374,10 +461,133 @@ func requiredSchemaKeys(raw any) ([]string, bool) {
 func ensureConnectorOrg(connectorOrgID, specOrgID string) error {
 	connectorOrgID = strings.TrimSpace(connectorOrgID)
 	specOrgID = strings.TrimSpace(specOrgID)
-	if connectorOrgID == "" || specOrgID == "" || connectorOrgID == specOrgID {
+	if specOrgID == "" {
+		return ErrForbidden
+	}
+	if connectorOrgID != "" && connectorOrgID == specOrgID {
 		return nil
 	}
 	return ErrForbidden
+}
+
+func validateExecutionContext(spec domain.ExecutionSpec, capability domain.Capability) error {
+	if strings.TrimSpace(spec.OrgID) == "" {
+		return ErrForbidden
+	}
+	if capability.HasSideEffect() && strings.TrimSpace(spec.ActorID) == "" {
+		return ErrForbidden
+	}
+	if (capability.HasSideEffect() || capability.Idempotency.Required) && strings.TrimSpace(spec.IdempotencyKey) == "" {
+		return fmt.Errorf("%w: idempotency_key is required for %s", ErrInvalidPayload, capability.Operation)
+	}
+	if spec.TaskID == nil && len(capability.RequiredScopes) > 0 && !hasRequiredScopes(spec.AuthScopes, capability.RequiredScopes) {
+		return ErrForbidden
+	}
+	return nil
+}
+
+func hasRequiredScopes(have []string, required []string) bool {
+	seen := make(map[string]struct{}, len(have))
+	for _, scope := range have {
+		scope = strings.TrimSpace(scope)
+		if scope != "" {
+			seen[scope] = struct{}{}
+		}
+	}
+	for _, scope := range required {
+		scope = strings.TrimSpace(scope)
+		if scope == "" {
+			continue
+		}
+		if _, ok := seen[scope]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func payloadHash(raw json.RawMessage) (string, error) {
+	if len(raw) == 0 {
+		raw = json.RawMessage(`{}`)
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", err
+	}
+	canonical, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(canonical)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func mustPayloadHash(raw json.RawMessage) string {
+	hash, err := payloadHash(raw)
+	if err != nil {
+		return ""
+	}
+	return hash
+}
+
+func actionBindingHash(binding map[string]any) (string, error) {
+	raw, err := json.Marshal(binding)
+	if err != nil {
+		return "", fmt.Errorf("marshal action binding: %w", err)
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func buildActionBinding(config domain.Connector, capability domain.Capability, spec domain.ExecutionSpec, payloadHash string) map[string]any {
+	binding := map[string]any{
+		"schema_version":     toolIntentSchemaVersion,
+		"org_id":             strings.TrimSpace(spec.OrgID),
+		"actor_id":           strings.TrimSpace(spec.ActorID),
+		"actor_type":         "agent",
+		"product_surface":    productSurfaceFor(capability, spec),
+		"run_id":             runIDFor(spec),
+		"tool_invocation_id": toolInvocationIDFor(capability, spec),
+		"connector_id":       spec.ConnectorID.String(),
+		"capability_id":      capability.ID,
+		"operation":          spec.Operation,
+		"target_system":      config.Kind,
+		"target_resource":    config.ID.String(),
+		"payload_hash":       payloadHash,
+		"idempotency_key":    strings.TrimSpace(spec.IdempotencyKey),
+		"risk_hint":          capability.RiskClass,
+	}
+	if spec.TaskID != nil {
+		binding["task_id"] = spec.TaskID.String()
+	}
+	return binding
+}
+
+func runIDFor(spec domain.ExecutionSpec) string {
+	if value := strings.TrimSpace(spec.RunID); value != "" {
+		return value
+	}
+	if spec.TaskID != nil {
+		return spec.TaskID.String()
+	}
+	return "connector-execution:" + strings.TrimSpace(spec.IdempotencyKey)
+}
+
+func toolInvocationIDFor(capability domain.Capability, spec domain.ExecutionSpec) string {
+	if value := strings.TrimSpace(spec.ToolInvocationID); value != "" {
+		return value
+	}
+	return strings.TrimSpace(capability.Operation) + ":" + strings.TrimSpace(spec.IdempotencyKey)
+}
+
+func productSurfaceFor(capability domain.Capability, spec domain.ExecutionSpec) string {
+	if value := strings.TrimSpace(spec.ProductSurface); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(capability.Product); value != "" {
+		return value
+	}
+	return "companion"
 }
 
 func executionLockKey(spec domain.ExecutionSpec) string {
@@ -411,6 +621,7 @@ func buildExecutionEvidence(config domain.Connector, capability domain.Capabilit
 		"error_message":      result.ErrorMessage,
 		"duration_ms":        result.DurationMS,
 		"idempotency_key":    spec.IdempotencyKey,
+		"action_binding":     buildActionBinding(config, capability, spec, mustPayloadHash(spec.Payload)),
 		"created_at":         result.CreatedAt.UTC().Format(time.RFC3339Nano),
 		"verification":       "unsigned",
 		"attestation_ready":  true,
