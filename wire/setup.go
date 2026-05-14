@@ -123,6 +123,8 @@ type Config struct {
 	LLMProvider       string
 	LLMAPIKey         string
 	LLMModel          string
+	LLMVertexProject  string
+	LLMVertexLocation string
 	MigrationFiles    fs.FS
 }
 
@@ -181,7 +183,13 @@ func NewServer(cfg Config) (http.Handler, func(), error) {
 	uc.SetTaskMemory(taskMemoryAdapter{uc: memUC, repo: repo})
 
 	// Runtime del compañero (LLM + tools + context)
-	llmProvider := runtime.NewProvider(cfg.LLMProvider, cfg.LLMAPIKey, cfg.LLMModel)
+	llmProvider := runtime.NewProvider(runtime.ProviderConfig{
+		Provider:       cfg.LLMProvider,
+		APIKey:         cfg.LLMAPIKey,
+		Model:          cfg.LLMModel,
+		VertexProject:  cfg.LLMVertexProject,
+		VertexLocation: cfg.LLMVertexLocation,
+	})
 	toolkit := runtime.NewToolKit(rc, memUC, watcherUC)
 
 	// Bridge LLM ↔ connectors: expone cada capability declarada por los

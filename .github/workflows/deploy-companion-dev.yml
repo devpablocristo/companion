@@ -111,18 +111,22 @@ jobs:
         env:
           LLM_PROVIDER: ${{ vars.COMPANION_LLM_PROVIDER_DEV }}
           LLM_MODEL: ${{ vars.COMPANION_LLM_MODEL_DEV }}
+          LLM_VERTEX_PROJECT: ${{ vars.COMPANION_LLM_VERTEX_PROJECT_DEV }}
+          LLM_VERTEX_LOCATION: ${{ vars.COMPANION_LLM_VERTEX_LOCATION_DEV }}
         run: |
           # DEV: ingress=all + allow-unauthenticated. La auth real la dan
           # COMPANION_API_KEYS (header HTTP). Esto permite browser/curl directos
           # contra companion-dev sin VPC connector ni cliente OIDC.
           # Para prod: cerrar con --no-allow-unauthenticated + ingress interno + IAP/LB.
+          # Vertex AI: companion-runtime-dev tiene roles/aiplatform.user; el
+          # provider usa ADC (no API key) si LLM_PROVIDER=vertex.
           gcloud run deploy "$SERVICE_NAME" \
             --project="$GCP_PROJECT_ID" \
             --region="$GCP_REGION" \
             --image="$IMAGE_URI" \
             --service-account="$CLOUD_RUN_SERVICE_ACCOUNT" \
             --add-cloudsql-instances="$CLOUDSQL_INSTANCE" \
-            --set-env-vars="DATABASE_URL=${DATABASE_URL},GOVERNANCE_BASE_URL=${GOVERNANCE_BASE_URL},COMPANION_LLM_PROVIDER=${LLM_PROVIDER},COMPANION_LLM_MODEL=${LLM_MODEL},COMPANION_GOVERNANCE_SYNC_INTERVAL_SEC=30,COMPANION_STRICT_GOVERNANCE=true" \
+            --set-env-vars="DATABASE_URL=${DATABASE_URL},GOVERNANCE_BASE_URL=${GOVERNANCE_BASE_URL},COMPANION_LLM_PROVIDER=${LLM_PROVIDER},COMPANION_LLM_MODEL=${LLM_MODEL},COMPANION_LLM_VERTEX_PROJECT=${LLM_VERTEX_PROJECT},COMPANION_LLM_VERTEX_LOCATION=${LLM_VERTEX_LOCATION},COMPANION_GOVERNANCE_SYNC_INTERVAL_SEC=30,COMPANION_STRICT_GOVERNANCE=true" \
             --set-secrets="COMPANION_API_KEYS=${SECRET_API_KEYS_NAME}:latest,GOVERNANCE_API_KEY=${SECRET_GOVERNANCE_API_KEY_NAME}:latest,COMPANION_LLM_API_KEY=${SECRET_LLM_API_KEY_NAME}:latest" \
             --allow-unauthenticated \
             --ingress=all \

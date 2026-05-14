@@ -58,6 +58,8 @@ func main() {
 		LLMProvider:       os.Getenv("COMPANION_LLM_PROVIDER"),
 		LLMAPIKey:         os.Getenv("COMPANION_LLM_API_KEY"),
 		LLMModel:          os.Getenv("COMPANION_LLM_MODEL"),
+		LLMVertexProject:  os.Getenv("COMPANION_LLM_VERTEX_PROJECT"),
+		LLMVertexLocation: os.Getenv("COMPANION_LLM_VERTEX_LOCATION"),
 		MigrationFiles:    migrations.Files,
 	}
 
