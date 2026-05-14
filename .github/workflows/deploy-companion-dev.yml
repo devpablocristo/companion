@@ -112,9 +112,10 @@ jobs:
           LLM_PROVIDER: ${{ vars.COMPANION_LLM_PROVIDER_DEV }}
           LLM_MODEL: ${{ vars.COMPANION_LLM_MODEL_DEV }}
         run: |
-          # Sin --allow-unauthenticated: el servicio requiere IAM (roles/run.invoker).
-          # --ingress=internal-and-cloud-load-balancing: bloquea internet abierto.
-          # GOVERNANCE_BASE_URL apunta al servicio Nexus governance-dev (mismo proyecto, internal ingress).
+          # DEV: ingress=all + allow-unauthenticated. La auth real la dan
+          # COMPANION_API_KEYS (header HTTP). Esto permite browser/curl directos
+          # contra companion-dev sin VPC connector ni cliente OIDC.
+          # Para prod: cerrar con --no-allow-unauthenticated + ingress interno + IAP/LB.
           gcloud run deploy "$SERVICE_NAME" \
             --project="$GCP_PROJECT_ID" \
             --region="$GCP_REGION" \
@@ -123,8 +124,8 @@ jobs:
             --add-cloudsql-instances="$CLOUDSQL_INSTANCE" \
             --set-env-vars="DATABASE_URL=${DATABASE_URL},GOVERNANCE_BASE_URL=${GOVERNANCE_BASE_URL},COMPANION_LLM_PROVIDER=${LLM_PROVIDER},COMPANION_LLM_MODEL=${LLM_MODEL},COMPANION_GOVERNANCE_SYNC_INTERVAL_SEC=30,COMPANION_STRICT_GOVERNANCE=true" \
             --set-secrets="COMPANION_API_KEYS=${SECRET_API_KEYS_NAME}:latest,GOVERNANCE_API_KEY=${SECRET_GOVERNANCE_API_KEY_NAME}:latest,COMPANION_LLM_API_KEY=${SECRET_LLM_API_KEY_NAME}:latest" \
-            --no-allow-unauthenticated \
-            --ingress=internal-and-cloud-load-balancing \
+            --allow-unauthenticated \
+            --ingress=all \
             --port=8080 \
             --min-instances=0 \
             --max-instances=3
