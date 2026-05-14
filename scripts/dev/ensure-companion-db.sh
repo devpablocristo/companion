@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Crea la base nexus_companion si no existe (útil cuando el volumen de Postgres
+# Crea la base companion si no existe (útil cuando el volumen de Postgres
 # se creó antes de montar postgres-init).
 set -euo pipefail
 
@@ -12,12 +12,12 @@ if ! docker compose exec -T companion-postgres pg_isready -U postgres >/dev/null
 fi
 
 EXISTS=$(docker compose exec -T companion-postgres psql -U postgres -Atqc \
-  "SELECT 1 FROM pg_database WHERE datname = 'nexus_companion'" || true)
+  "SELECT 1 FROM pg_database WHERE datname = 'companion'" || true)
 if [ "$EXISTS" = "1" ]; then
-  echo "OK: database nexus_companion already exists"
+  echo "OK: database companion already exists"
   exit 0
 fi
 
-echo "Creating database nexus_companion..."
-docker compose exec -T companion-postgres psql -U postgres -c "CREATE DATABASE nexus_companion;"
-echo "OK: nexus_companion created"
+echo "Creating database companion..."
+docker compose exec -T companion-postgres psql -U postgres -c "CREATE DATABASE companion;"
+echo "OK: companion created"

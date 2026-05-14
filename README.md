@@ -5,8 +5,7 @@ agentes, memoria, tools, planificación y ejecución asistida. Consume
 **Nexus Governance** (proyecto separado) para toda acción sensible que requiera
 policy, approval, risk o audit fuerte.
 
-> La DB se llama `nexus_companion` por consistencia histórica con el resto
-> del ecosistema; el módulo Go es `github.com/devpablocristo/companion`.
+> La DB se llama `companion`; el módulo Go es `github.com/devpablocristo/companion`.
 
 ## Boundaries arquitectónicos (regla dura)
 
@@ -50,7 +49,7 @@ companion/
 
 ## Requisitos
 
-- PostgreSQL (la DB `nexus_companion` se crea automáticamente desde el container).
+- PostgreSQL (la DB `companion` se crea automáticamente desde el container).
 - **Nexus Governance** accesible vía `GOVERNANCE_BASE_URL` y `GOVERNANCE_API_KEY`
   (proyecto separado en `../nexus/`).
 
