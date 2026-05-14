@@ -74,6 +74,14 @@ type taskMemoryWriter interface {
 	UpsertTaskMemory(ctx context.Context, taskID uuid.UUID, kind, key string, contentText string, payload json.RawMessage) error
 }
 
+// agentMemoryWriter es el puerto al que el chat flow persiste conversaciones
+// durables (agent_conversations + agent_conversation_messages). Es
+// best-effort: errores se logean pero no rompen el chat.
+type agentMemoryWriter interface {
+	StartConversation(ctx context.Context, orgID, userID, productSurface, title string) (uuid.UUID, error)
+	AppendMessage(ctx context.Context, conversationID uuid.UUID, orgID, role, content string) error
+}
+
 // ChatOrchestrator interfaz del runtime del compañero.
 type ChatOrchestrator interface {
 	Run(ctx context.Context, in OrchestratorInput) (OrchestratorResult, error)
@@ -102,6 +110,7 @@ type Usecases struct {
 	orchestrator           ChatOrchestrator // nil = sin LLM (solo persiste)
 	executor               taskExecutor
 	taskMemory             taskMemoryWriter
+	agentMemory            agentMemoryWriter
 	governanceSyncInterval time.Duration
 	// governanceGateEnforced controla si writes bloqueados por governance
 	// devuelven ErrGovernanceNotApproved (true → handler retorna HTTP 412
@@ -129,6 +138,13 @@ func (u *Usecases) SetExecutor(executor taskExecutor) {
 
 func (u *Usecases) SetTaskMemory(writer taskMemoryWriter) {
 	u.taskMemory = writer
+}
+
+// SetAgentMemory inyecta el persistor de conversaciones durables. Opcional:
+// si no se llama, el chat sigue funcionando pero no se persiste en las
+// tablas agent_*.
+func (u *Usecases) SetAgentMemory(writer agentMemoryWriter) {
+	u.agentMemory = writer
 }
 
 // SetGovernanceGateEnforced activa el typed error ErrGovernanceNotApproved (HTTP 412)
@@ -320,6 +336,11 @@ type ChatResult struct {
 	Messages []domain.TaskMessage
 }
 
+// agentConversationContextKey nombre del field en task.context_json que guarda
+// el agent_conversations.id asociado a la task. Permite reusar la misma
+// conversation_id en mensajes sucesivos del mismo task.
+const agentConversationContextKey = "agent_conversation_id"
+
 // Chat combina crear/reusar tarea + agregar mensaje del usuario.
 // Es el endpoint principal para la interfaz conversacional del suscriptor.
 func (u *Usecases) Chat(ctx context.Context, in ChatInput) (ChatResult, error) {
@@ -329,6 +350,7 @@ func (u *Usecases) Chat(ctx context.Context, in ChatInput) (ChatResult, error) {
 
 	var t domain.Task
 	var err error
+	newTask := false
 
 	if in.TaskID != nil {
 		// Reusar tarea existente
@@ -357,8 +379,15 @@ func (u *Usecases) Chat(ctx context.Context, in ChatInput) (ChatResult, error) {
 		if err != nil {
 			return ChatResult{}, fmt.Errorf("create chat task: %w", err)
 		}
+		newTask = true
 		slog.Info("companion chat started", "task_id", t.ID.String(), "user_id", in.UserID)
 	}
+
+	// Conversación durable en agent_conversations (best-effort). Si arrancamos
+	// task nueva: creamos conversation y stasheamos su id en task.context_json
+	// para reusar en mensajes sucesivos. Si task existente: reusamos el id ya
+	// guardado.
+	convID := u.ensureAgentConversation(ctx, &t, in, newTask)
 
 	// Agregar mensaje del usuario
 	_, err = u.repo.InsertMessage(ctx, domain.TaskMessage{
@@ -370,6 +399,7 @@ func (u *Usecases) Chat(ctx context.Context, in ChatInput) (ChatResult, error) {
 	if err != nil {
 		return ChatResult{}, fmt.Errorf("insert chat message: %w", err)
 	}
+	u.persistAgentMessage(ctx, convID, t.OrgID, "user", in.Message)
 
 	// Si hay orchestrator, generar respuesta del compañero
 	if u.orchestrator != nil {
@@ -404,6 +434,7 @@ func (u *Usecases) Chat(ctx context.Context, in ChatInput) (ChatResult, error) {
 				if insertErr != nil {
 					slog.Error("insert orchestrator reply", "error", insertErr)
 				}
+				u.persistAgentMessage(ctx, convID, t.OrgID, "assistant", result.Reply)
 			}
 		}
 	}
@@ -415,6 +446,80 @@ func (u *Usecases) Chat(ctx context.Context, in ChatInput) (ChatResult, error) {
 	}
 
 	return ChatResult{Task: t, Messages: msgs}, nil
+}
+
+// ensureAgentConversation obtiene o crea la conversación durable asociada a la
+// task. Si la task ya tenía un id stasheado en context_json, lo reusa. Si no,
+// crea una nueva y persiste el id en context_json. Best-effort: nunca falla el
+// chat, solo logea.
+func (u *Usecases) ensureAgentConversation(ctx context.Context, t *domain.Task, in ChatInput, newTask bool) uuid.UUID {
+	if u.agentMemory == nil {
+		return uuid.Nil
+	}
+	if !newTask {
+		if existing := extractAgentConversationID(t.ContextJSON); existing != uuid.Nil {
+			return existing
+		}
+	}
+	productSurface := in.ProductSurface
+	if productSurface == "" {
+		productSurface = "companion"
+	}
+	convID, err := u.agentMemory.StartConversation(ctx, t.OrgID, in.UserID, productSurface, t.Title)
+	if err != nil {
+		slog.Error("agent memory start conversation", "error", err, "task_id", t.ID)
+		return uuid.Nil
+	}
+	if updated, ok := mergeAgentConversationID(t.ContextJSON, convID); ok {
+		t.ContextJSON = updated
+		if _, err := u.repo.UpdateTask(ctx, *t); err != nil {
+			slog.Error("update task context with conversation_id", "error", err, "task_id", t.ID)
+		}
+	}
+	return convID
+}
+
+func (u *Usecases) persistAgentMessage(ctx context.Context, convID uuid.UUID, orgID, role, content string) {
+	if u.agentMemory == nil || convID == uuid.Nil || content == "" {
+		return
+	}
+	if err := u.agentMemory.AppendMessage(ctx, convID, orgID, role, content); err != nil {
+		slog.Error("agent memory append message", "error", err, "conversation_id", convID, "role", role)
+	}
+}
+
+func extractAgentConversationID(raw json.RawMessage) uuid.UUID {
+	if len(raw) == 0 {
+		return uuid.Nil
+	}
+	var holder map[string]any
+	if err := json.Unmarshal(raw, &holder); err != nil {
+		return uuid.Nil
+	}
+	v, ok := holder[agentConversationContextKey].(string)
+	if !ok {
+		return uuid.Nil
+	}
+	parsed, err := uuid.Parse(v)
+	if err != nil {
+		return uuid.Nil
+	}
+	return parsed
+}
+
+func mergeAgentConversationID(raw json.RawMessage, convID uuid.UUID) (json.RawMessage, bool) {
+	holder := map[string]any{}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &holder); err != nil {
+			holder = map[string]any{}
+		}
+	}
+	holder[agentConversationContextKey] = convID.String()
+	out, err := json.Marshal(holder)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
 }
 
 type InvestigateInput struct {

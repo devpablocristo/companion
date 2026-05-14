@@ -182,6 +182,11 @@ func NewServer(cfg Config) (http.Handler, func(), error) {
 	memHandler := memory.NewHandler(memUC, taskOrgGetter{repo: repo})
 	uc.SetTaskMemory(taskMemoryAdapter{uc: memUC, repo: repo})
 
+	// Agent memory (conversation history durable per user). El repo de memory
+	// implementa los métodos agent_* — pasamos el mismo *PostgresRepository.
+	agentMemUC := memory.NewAgentMemoryUC(memRepo)
+	uc.SetAgentMemory(agentMemUC)
+
 	// Runtime del compañero (LLM + tools + context)
 	llmProvider := runtime.NewProvider(runtime.ProviderConfig{
 		Provider:       cfg.LLMProvider,
