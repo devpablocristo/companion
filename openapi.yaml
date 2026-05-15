@@ -33,7 +33,49 @@ paths:
           description: Chat result
           content:
             application/json:
-              schema: { type: object }
+              schema: { $ref: "#/components/schemas/ChatResponse" }
+  /v1/chat/conversations:
+    get:
+      summary: Lista conversaciones del agente (scoped por org+user)
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: Conversation list
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConversationListResponse" }
+  /v1/chat/conversations/{id}:
+    get:
+      summary: Detalle de una conversación con mensajes
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Conversation detail
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConversationDetail" }
+        "404": { description: Conversation not found }
+  /v1/notifications:
+    post:
+      summary: Genera insights/notificaciones del tenant (stub en v0.1)
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NotificationsRequest" }
+      responses:
+        "200":
+          description: Notifications result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NotificationsResponse" }
   /v1/tasks:
     get:
       summary: Lista tasks del tenant
@@ -329,8 +371,150 @@ components:
       properties:
         message: { type: string }
         task_id: { type: string, format: uuid }
+        chat_id: { type: string, format: uuid, description: "Continúa conversación durable existente" }
         channel: { type: string }
         product_surface: { type: string }
+        route_hint: { type: string }
+        confirmed_actions:
+          type: array
+          items: { type: string }
+        handoff: { $ref: "#/components/schemas/ChatHandoff" }
+    ChatResponse:
+      description: |
+        Response canónico del chat. Mirror de
+        github.com/devpablocristo/core/ai/contracts/go ChatResponse +
+        extras Companion-específicos (task, messages) para no romper la
+        console interna ni los smoke tests.
+      type: object
+      required: [reply, task, messages]
+      properties:
+        chat_id: { type: string, format: uuid }
+        reply: { type: string }
+        blocks:
+          type: array
+          items: { $ref: "#/components/schemas/ChatBlock" }
+        tool_calls:
+          type: array
+          items: { $ref: "#/components/schemas/ChatToolCall" }
+        pending_confirmations:
+          type: array
+          items: { $ref: "#/components/schemas/ChatPendingConfirmation" }
+        tokens_used: { type: integer }
+        routed_agent: { type: string }
+        routing_source: { type: string }
+        output_kind: { type: string }
+        task: { $ref: "#/components/schemas/Task" }
+        messages:
+          type: array
+          items: { $ref: "#/components/schemas/TaskMessage" }
+    ChatHandoff:
+      type: object
+      required: [source]
+      properties:
+        source: { type: string }
+        target_agent: { type: string }
+    ChatBlock:
+      description: |
+        Unión etiquetada por `type`. v0.1 solo expone la variante "text".
+        Variantes reservadas (no emitirlas todavía): "actions",
+        "insight_card", "kpi_group", "table".
+      type: object
+      required: [type]
+      properties:
+        type: { type: string, enum: [text, actions, insight_card, kpi_group, table] }
+        text: { type: string, description: "presente cuando type=text" }
+    ChatToolCall:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        args: {}
+        result: {}
+        duration_ms: { type: integer }
+        error: { type: string }
+    ChatPendingConfirmation:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string }
+        description: { type: string }
+        binding_hash: { type: string }
+    TaskMessage:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        author_type: { type: string, enum: [user, assistant, system, tool] }
+        author_id: { type: string }
+        body: { type: string }
+        metadata: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
+    ConversationSummary:
+      type: object
+      required: [id, created_at, updated_at, message_count]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        message_count: { type: integer }
+        product_surface: { type: string }
+    ConversationMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role: { type: string, enum: [user, assistant, system, tool] }
+        content: { type: string }
+        timestamp: { type: string, format: date-time }
+        blocks:
+          type: array
+          items: { $ref: "#/components/schemas/ChatBlock" }
+    ConversationDetail:
+      type: object
+      required: [id, created_at, updated_at, messages]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        messages:
+          type: array
+          items: { $ref: "#/components/schemas/ConversationMessage" }
+    ConversationListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/ConversationSummary" }
+        next_cursor: { type: string }
+    NotificationsRequest:
+      type: object
+      properties:
+        kind: { type: string, default: insight }
+        period: { type: string, enum: [today, week, month] }
+        compare: { type: boolean }
+        top_limit: { type: integer }
+        preferred_language: { type: string }
+    NotificationsResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/NotificationItem" }
+        service_kind: { type: string }
+        output_kind: { type: string }
+    NotificationItem:
+      type: object
+      required: [id, title]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        body: { type: string }
+        severity: { type: string }
+        period: { type: string }
+        scope: { type: string }
+        context: {}
     CreateTaskRequest:
       type: object
       required: [title]
