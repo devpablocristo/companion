@@ -499,10 +499,7 @@ func (h *Handler) chat(w http.ResponseWriter, r *http.Request) {
 	for _, m := range result.Messages {
 		msgs = append(msgs, tasksdto.MessageToResponse(m))
 	}
-	httpjson.WriteJSON(w, http.StatusOK, tasksdto.ChatResponse{
-		Task:     tasksdto.TaskToResponse(result.Task),
-		Messages: msgs,
-	})
+	httpjson.WriteJSON(w, http.StatusOK, tasksdto.ChatResponseFromResult(result.Task, result.Messages))
 }
 
 func (h *Handler) authorizeTaskOrg(w http.ResponseWriter, r *http.Request, id uuid.UUID) bool {

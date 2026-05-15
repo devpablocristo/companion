@@ -15,6 +15,7 @@ import (
 type agentMemRepo interface {
 	CreateAgentConversation(ctx context.Context, in domain.AgentConversation) (domain.AgentConversation, error)
 	GetAgentConversation(ctx context.Context, id uuid.UUID) (domain.AgentConversation, error)
+	ListAgentConversations(ctx context.Context, orgID, userID string, limit int) ([]domain.AgentConversation, error)
 	AppendAgentMessage(ctx context.Context, in domain.AgentConversationMessage) (domain.AgentConversationMessage, error)
 	ListAgentMessages(ctx context.Context, conversationID uuid.UUID, limit int) ([]domain.AgentConversationMessage, error)
 }
@@ -85,4 +86,23 @@ func (u *AgentMemoryUC) AppendMessage(ctx context.Context, conversationID uuid.U
 // orden cronológico.
 func (u *AgentMemoryUC) ListMessages(ctx context.Context, conversationID uuid.UUID, limit int) ([]domain.AgentConversationMessage, error) {
 	return u.repo.ListAgentMessages(ctx, conversationID, limit)
+}
+
+// ListConversations devuelve hasta `limit` conversaciones recientes de un
+// usuario dentro de una org. Si userID está vacío, devuelve todas las del
+// tenant (caso admin/console).
+func (u *AgentMemoryUC) ListConversations(ctx context.Context, orgID, userID string, limit int) ([]domain.AgentConversation, error) {
+	orgID = strings.TrimSpace(orgID)
+	if orgID == "" {
+		return nil, fmt.Errorf("org_id is required")
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	return u.repo.ListAgentConversations(ctx, orgID, strings.TrimSpace(userID), limit)
+}
+
+// GetConversation devuelve una conversación por id.
+func (u *AgentMemoryUC) GetConversation(ctx context.Context, id uuid.UUID) (domain.AgentConversation, error) {
+	return u.repo.GetAgentConversation(ctx, id)
 }

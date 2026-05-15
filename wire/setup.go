@@ -186,6 +186,7 @@ func NewServer(cfg Config) (http.Handler, func(), error) {
 	// implementa los métodos agent_* — pasamos el mismo *PostgresRepository.
 	agentMemUC := memory.NewAgentMemoryUC(memRepo)
 	uc.SetAgentMemory(agentMemUC)
+	chatHandler := memory.NewChatHandler(agentMemUC)
 
 	// Runtime del compañero (LLM + tools + context)
 	llmProvider := runtime.NewProvider(runtime.ProviderConfig{
@@ -245,6 +246,7 @@ func NewServer(cfg Config) (http.Handler, func(), error) {
 	h.Register(mux)
 	watcherHandler.Register(mux)
 	memHandler.Register(mux)
+	chatHandler.Register(mux)
 	connHandler.Register(mux)
 	traceHandler.Register(mux)
 	governanceAssistHandler.Register(mux)

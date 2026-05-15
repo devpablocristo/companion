@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"time"
 
+	contracts "github.com/devpablocristo/core/ai/contracts/go"
 	"github.com/devpablocristo/core/governance/go/governanceclient"
 	connectordomain "github.com/devpablocristo/companion/internal/connectors/usecases/domain"
 	domain "github.com/devpablocristo/companion/internal/tasks/usecases/domain"
+	"github.com/google/uuid"
 )
 
 type CreateTaskRequest struct {
@@ -133,7 +135,18 @@ type ChatRequest struct {
 }
 
 // ChatResponse respuesta del chat con tarea y mensajes.
+//
+// Incluye los campos canónicos del contrato compartido core/ai/contracts/go
+// (chat_id, reply, blocks) que consumen pymes/frontend, nexus/console, etc.
+// Mantenemos task + messages como extensión Companion-específica para no
+// romper la console interna ni los smoke tests.
 type ChatResponse struct {
+	// Canon contract fields (mirror github.com/devpablocristo/core/ai/contracts/go ChatResponse).
+	ChatID uuid.UUID            `json:"chat_id,omitempty"`
+	Reply  string               `json:"reply"`
+	Blocks []contracts.ChatBlock `json:"blocks,omitempty"`
+
+	// Companion-specific extras: la task FSM + el log completo de mensajes.
 	Task     TaskResponse      `json:"task"`
 	Messages []MessageResponse `json:"messages"`
 }
@@ -235,6 +248,63 @@ func MessageToResponse(m domain.TaskMessage) MessageResponse {
 		Metadata:   m.Metadata,
 		CreatedAt:  m.CreatedAt.UTC().Format(time.RFC3339),
 	}
+}
+
+// ChatResponseFromResult arma la respuesta canónica del chat a partir de la
+// task y la lista de mensajes. Popula los campos contract (chat_id, reply,
+// blocks) además de task + messages legacy.
+//
+//   - chat_id viene de task.context_json.agent_conversation_id (Sprint 5'
+//     wiring); si no hay, queda uuid.Nil y se omite por omitempty.
+//   - reply es el último mensaje del assistant (author_type=system o
+//     assistant); si no hay, queda vacío.
+//   - blocks contiene un único ChatTextBlock con el reply (text-only v0.1).
+func ChatResponseFromResult(task domain.Task, messages []domain.TaskMessage) ChatResponse {
+	msgs := make([]MessageResponse, 0, len(messages))
+	for _, m := range messages {
+		msgs = append(msgs, MessageToResponse(m))
+	}
+
+	resp := ChatResponse{
+		Task:     TaskToResponse(task),
+		Messages: msgs,
+		ChatID:   extractChatID(task.ContextJSON),
+	}
+
+	// Buscar último mensaje assistant/system para reply + blocks.
+	for i := len(messages) - 1; i >= 0; i-- {
+		m := messages[i]
+		if m.AuthorType == "assistant" || m.AuthorType == "system" {
+			resp.Reply = m.Body
+			if m.Body != "" {
+				resp.Blocks = []contracts.ChatBlock{{Type: "text", Text: m.Body}}
+			}
+			break
+		}
+	}
+	return resp
+}
+
+// extractChatID lee task.context_json.agent_conversation_id (poblado en
+// Sprint 5' al persistir el chat en agent_conversations). Devuelve uuid.Nil
+// si no existe o no es parseable.
+func extractChatID(raw json.RawMessage) uuid.UUID {
+	if len(raw) == 0 {
+		return uuid.Nil
+	}
+	var holder map[string]any
+	if err := json.Unmarshal(raw, &holder); err != nil {
+		return uuid.Nil
+	}
+	v, ok := holder["agent_conversation_id"].(string)
+	if !ok {
+		return uuid.Nil
+	}
+	parsed, err := uuid.Parse(v)
+	if err != nil {
+		return uuid.Nil
+	}
+	return parsed
 }
 
 func ActionToResponse(a domain.TaskAction) ActionResponse {
