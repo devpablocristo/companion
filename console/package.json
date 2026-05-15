@@ -18,6 +18,8 @@
     "@devpablocristo/core-authn": "^0.3.0",
     "@devpablocristo/core-browser": "^0.4.0",
     "@devpablocristo/core-http": "^0.2.0",
+    "@devpablocristo/modules-ui-conversation-inbox": "^0.2.0",
+    "@devpablocristo/modules-ui-notification-feed": "^0.2.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5"
   },

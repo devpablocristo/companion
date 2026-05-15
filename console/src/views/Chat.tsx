@@ -1,4 +1,8 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import {
+  ConversationInbox,
+  type ConversationInboxItem,
+} from '@devpablocristo/modules-ui-conversation-inbox'
 import { sendChatMessage, fetchCompanionTasks } from '../api'
 import { t, relativeTime } from '../i18n'
 
@@ -106,7 +110,7 @@ export default function Chat({ lang }: { lang: string }) {
     setMessages([])
   }
 
-  const selectConversation = async (id: string) => {
+  const selectConversation = useCallback(async (id: string) => {
     setTaskId(id)
     try {
       const { fetchCompanionTask } = await import('../api')
@@ -115,7 +119,34 @@ export default function Chat({ lang }: { lang: string }) {
     } catch {
       setMessages([])
     }
-  }
+  }, [])
+
+  // Mapea las tasks (Companion-side) al shape de ConversationInbox. Cada
+  // entry expone una action "Abrir" porque el componente del módulo no
+  // tiene afordancia click-en-la-fila completa; usamos el slot `actions`
+  // como CTA primaria.
+  const inboxItems: ConversationInboxItem[] = useMemo(() => {
+    return conversations.map((c) => ({
+      id: c.id,
+      contactName: c.title || t(lang, 'chat'),
+      timestamp: relativeTime(lang, c.created_at),
+      unread: taskId !== c.id,
+      tone: taskId === c.id ? 'attention' : 'default',
+      actions: (
+        <button
+          type="button"
+          onClick={() => selectConversation(c.id)}
+          className={`px-3 py-1 text-xs rounded transition-colors ${
+            taskId === c.id
+              ? 'bg-blue-600 text-white'
+              : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+          }`}
+        >
+          {t(lang, taskId === c.id ? 'chat' : 'newConversation')}
+        </button>
+      ),
+    }))
+  }, [conversations, taskId, lang, selectConversation])
 
   return (
     <div className="flex gap-4 h-[calc(100vh-140px)]">
@@ -129,26 +160,16 @@ export default function Chat({ lang }: { lang: string }) {
           </button>
         </div>
         <div className="flex-1 overflow-y-auto">
-          {loadingConversations ? (
-            <p className="text-gray-500 text-sm p-3">...</p>
-          ) : conversations.length === 0 ? (
-            <p className="text-gray-500 text-sm p-3">
-              {t(lang, 'noConversations')}
-            </p>
-          ) : (
-            conversations.map((c) => (
-              <button
-                key={c.id}
-                onClick={() => selectConversation(c.id)}
-                className={`w-full text-left px-3 py-2 border-b border-gray-700 hover:bg-gray-700 transition-colors ${
-                  taskId === c.id ? 'bg-gray-700' : ''
-                }`}
-              >
-                <p className="text-sm text-white truncate">{c.title}</p>
-                <p className="text-xs text-gray-500">{relativeTime(lang, c.created_at)}</p>
-              </button>
-            ))
-          )}
+          {/* Inbox de conversaciones del módulo compartido
+              @devpablocristo/modules-ui-conversation-inbox.
+              Misma UX que pymes/frontend; antes acá había una lista
+              custom (F-07 del audit modular-swinging-hummingbird). */}
+          <ConversationInbox
+            items={inboxItems}
+            loading={loadingConversations}
+            loadingMessage={t(lang, 'chat') + '…'}
+            emptyMessage={t(lang, 'noConversations')}
+          />
         </div>
       </div>
 
