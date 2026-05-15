@@ -15,8 +15,8 @@ github.com/containerd/errdefs/pkg v0.3.0/go.mod h1:NJw6s9HwNuRhnjJhM7pylWwMyAkmC
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
-github.com/devpablocristo/core/ai/go v0.1.0 h1:8YXT8i715zogSYPspIj/DeKPiprMjkjdAvBhWpBAaVo=
-github.com/devpablocristo/core/ai/go v0.1.0/go.mod h1:yixhr0luK+6a7vSJs0fKxBFInKxnz1yGc6w41JHXtpI=
+github.com/devpablocristo/core/ai/go v0.3.0 h1:uLNstyw30+qUTPAT6f+BOR1w38w6zW8E1nQ+jlVyhUs=
+github.com/devpablocristo/core/ai/go v0.3.0/go.mod h1:yixhr0luK+6a7vSJs0fKxBFInKxnz1yGc6w41JHXtpI=
 github.com/devpablocristo/core/authn/go v0.2.1 h1:UdiRYK85ZO9VmnFTfcAaFSYx6yS9ZZEZYm0kn+4AKLY=
 github.com/devpablocristo/core/authn/go v0.2.1/go.mod h1:L2SDT71ygu2MF5r/ZbleEaFwglPqJdtSR9G57TP2JcQ=
 github.com/devpablocristo/core/concurrency/go v0.2.0 h1:B+NZ5J/n6Ehae8Iv3jdvc0A2cbezJIlfmWe9YGK6yzY=
@@ -27,8 +27,6 @@ github.com/devpablocristo/core/databases/postgres/go v0.1.1 h1:bvMaT5i+AFUeKdYDR
 github.com/devpablocristo/core/databases/postgres/go v0.1.1/go.mod h1:6lpx7COXzInJodKpqsLonSyzkcUIH3raRV2AEBCy7BQ=
 github.com/devpablocristo/core/errors/go v0.1.0 h1:AGcc9fPrlymjOhrh/rtFx+gqWcRdZJkUff1qivVNjkY=
 github.com/devpablocristo/core/errors/go v0.1.0/go.mod h1:Ju3mqSVdV7FlIf4/FtQt8U8+nd0EC+erBj+Kk9xjx+c=
-github.com/devpablocristo/core/governance/go v0.1.0 h1:g+485c7j/dSrjRgGJtCzsZzALZlPfKN8k7JdBATvYEk=
-github.com/devpablocristo/core/governance/go v0.1.0/go.mod h1:IoHJZyEg61+lhQawpoWvDgVdL5JV6YZXxWmaz1Rke+0=
 github.com/devpablocristo/core/http/go v0.1.1 h1:sTqSbMjbULIpl7XMK/CJjZ8Gned3/LcxyQbx6h6ioMo=
 github.com/devpablocristo/core/http/go v0.1.1/go.mod h1:z4xQjIs6RFYQ0DdKZPi7N/0aWkOJFdBVTSPpf5kHcYA=
 github.com/devpablocristo/core/observability/go v0.1.0 h1:9YPGXrK8ySHFOkZrtNlw0IYYyBBooNN/PR+/YLl0GJs=
